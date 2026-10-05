@@ -288,7 +288,18 @@ public:
     /// the choice may come to on a display that refreshes faster than the title draws.
     Governor(s32 fixed_pace_, s32 fastest_pace_, double fps_cap_)
         : fixed_pace{fixed_pace_}, fastest_pace{fastest_pace_}, fps_cap{fps_cap_},
-          pace{fixed_pace_ >= 1 ? fixed_pace_ : 2} {}
+          pace{fixed_pace_ >= 1 ? fixed_pace_ : 2} {
+        // The original ten-minute hold can outlast a temporary demanding scene. Allow
+        // bounded probes sooner without removing the existing backoff after failed probes.
+        if (const char* value = std::getenv("SHADPS4_VR_RETRY_SECONDS"); value != nullptr) {
+            const s32 seconds = std::atoi(value);
+            if (seconds > 0) {
+                retry_after = std::chrono::seconds{std::clamp(seconds, 15, 600)};
+            }
+        }
+        LOG_INFO(Core, "Full-refresh recovery may retry after {} seconds; fixed pace {}",
+                 retry_after.count(), fixed_pace);
+    }
 
     /// `fixed` is a size to keep to, 0 where the size is to be chosen here, NotMine where the
     /// title chooses it. Answers with the size to hold the title to, 0 for none.
@@ -474,7 +485,8 @@ private:
         // seen not to fit one, as on a display that refreshes faster than the title can draw
         // whatever its size: every try is a few seconds of frames that come unevenly.)
         const bool own_fits = pace != 2 || own_time == 0.0 ||
-                              own_time * (1.0 + Over) <= refresh || now - last_pace_regret > Forget;
+                              own_time * (1.0 + Over) <= refresh ||
+                              now - last_pace_regret > retry_after;
         if (paced && pace > fastest && now > faster_allowed && own_fits) {
             const s32 smallest = sized ? smallest_at(pace - 1) : level;
             if (cost_at(smallest) * (1.0 + PaceMargin) <= (pace - 1) * refresh) {
@@ -547,7 +559,6 @@ private:
     static constexpr auto Calm = std::chrono::seconds{90};
     static constexpr auto FirstPatience = std::chrono::seconds{6};
     static constexpr auto LongestPatience = std::chrono::seconds{120};
-    static constexpr auto Forget = std::chrono::minutes{10};
     static constexpr u32 FasterWindows = 4;
     /// By how much of what they are given frames may take longer, on average, and still count
     /// as fitting: frames that fit take exactly what they are given.
@@ -583,6 +594,7 @@ private:
     Clock::time_point last_pace_regret;
     std::chrono::seconds patience{FirstPatience};
     std::chrono::seconds pace_patience{FirstPatience};
+    std::chrono::seconds retry_after{600};
     // What frames took when one refresh each was last found to be too few for them.
     double own_time{};
     // When the size last went up and the pace last got faster, if that still stands.

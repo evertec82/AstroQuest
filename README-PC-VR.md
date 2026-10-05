@@ -1,5 +1,38 @@
 # Astro Bot Rescue Mission on the PC, shown in the headset through Virtual Desktop
 
+## Experimental PC performance build
+
+This fork retains upstream's Quest support and adds PC VR experiments. The fork's initial
+settings are **3600x3840 per eye and a 72 FPS cap**. Double-click `Play AstroQuest.bat` to
+choose resolution, maximum framerate and field of view before each launch. The choices are
+saved in `pc-vr/settings.txt`. Set the actual headset refresh rate separately in Virtual
+Desktop; use 72 Hz and turn SSW off for the initial native-refresh test.
+
+- OpenXR uses a second queue in the same Vulkan graphics family when available, with a
+  producer timeline semaphore and copy-completion fence. Set `SHADPS4_XR_SHARED_QUEUE=1`
+  for the original shared queue behavior.
+- `Run Recovery.bat` sets `SHADPS4_VR_RETRY_SECONDS=30`. This permits another full-refresh
+  probe sooner after temporary overload. GPU headroom checks and retry backoff remain, so
+  repeated failures can delay another probe up to 120 seconds. Probes may cause judder;
+  this does not make a demanding scene cheaper to render.
+- `Run Original Recovery.bat` uses the original 600-second recovery gate for comparison.
+  The executable also defaults to 600 seconds unless the environment override is set.
+- `Run Full Refresh Diagnostic.bat` forces one game frame per headset refresh. This
+  diagnostic ignores the selected FPS cap and can reveal throughput hidden by automatic
+  half-rate fallback; it cannot guarantee native refresh and may produce uneven motion.
+- Windows CPU timing uses `GetThreadTimes`. The launchers enable periodic frame-path
+  diagnostics and archive each session's logs and selected settings under `test-logs/`.
+
+The separate-queue build delivered roughly 72 FPS for most of a local 72 Hz session before
+falling to 36 FPS. The shortened recovery interval has passed a governor simulation but
+has not yet been validated in a headset. Release compilation, queue synchronization and
+GUI selection/persistence checks passed. Compare identical scenes and settings, including
+an easier scene after overload, before drawing performance conclusions.
+
+For a separate GPU-cost experiment, add `msaa=2` to `pc-vr/settings.txt`; the default is 4.
+No local game files, personal saves, account configuration or performance logs are published
+in this fork. The upstream documentation below describes the original defaults and launcher.
+
 The second way to play (the first, the app that runs on the headset itself, is in
 `README-QUEST-VR.md`): the emulator runs on this PC, and the picture goes to the Quest 3 the
 way any PC VR game does, through Virtual Desktop. The PC has far more to give than the
@@ -233,10 +266,14 @@ Things that had to be right, for whoever works on this again:
   when it makes its device (`vk_platform.cpp`, `vk_instance.cpp`). A headset that connects
   after that still works: the extensions the common Windows runtimes need are enabled
   whenever a runtime is installed.
-- **The queue is shared.** Runtimes submit to the emulator's Vulkan queue when frames begin
-  and end, when images are acquired and released, and (Virtual Desktop's) when a swapchain's
-  images are first listed. All of those calls are made under the lock the emulator's own
-  submissions take (`Scheduler::submit_mutex`).
+- **The headset queue is separate when available.** OpenXR uses queue 1 of the renderer's
+  graphics family when that family offers more than one queue. Runtime calls and headset
+  copies synchronize on their own mutex, so a blocking runtime call cannot hold up the
+  emulator's queue 0 submissions. The copy waits on the producer's timeline semaphore;
+  its fence must finish before the source image is returned to the renderer. Devices with
+  only one graphics queue retain the shared queue and `Scheduler::submit_mutex`.
+  `env=SHADPS4_XR_SHARED_QUEUE=1` selects that shared path for comparison. Every ten seconds,
+  `Headset queue ...` reports the end-frame mutex wait separately from the runtime call.
 - **sRGB.** A runtime takes an 8-bit image that is not of an sRGB format for linear light and
   shows it too bright. The headset's picture is drawn into an sRGB image (the eye pass
   converts back to linear light at its end, `linear_out` in `post_process.frag`) and copied

@@ -536,9 +536,9 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
             .instance = instance.GetInstance(),
             .physical_device = instance.GetPhysicalDevice(),
             .device = instance.GetDevice(),
-            .queue = instance.GetGraphicsQueue(),
+            .queue = instance.GetHeadsetQueue(),
             .queue_family = instance.GetGraphicsQueueFamilyIndex(),
-            .queue_index = 0,
+            .queue_index = instance.GetHeadsetQueueIndex(),
         });
     }
 #endif

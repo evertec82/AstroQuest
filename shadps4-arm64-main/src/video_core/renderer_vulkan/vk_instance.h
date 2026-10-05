@@ -71,6 +71,14 @@ public:
         return graphics_queue;
     }
 
+    vk::Queue GetHeadsetQueue() const {
+        return headset_queue;
+    }
+
+    u32 GetHeadsetQueueIndex() const {
+        return headset_queue_index;
+    }
+
     vk::Queue GetPresentQueue() const {
         return present_queue;
     }
@@ -531,6 +539,8 @@ private:
     VmaAllocator allocator{};
     vk::Queue present_queue;
     vk::Queue graphics_queue;
+    vk::Queue headset_queue;
+    u32 headset_queue_index{};
     std::vector<vk::PhysicalDevice> physical_devices;
     std::vector<std::string> available_extensions;
     std::unordered_map<vk::Format, vk::FormatProperties3> format_properties;

@@ -435,10 +435,21 @@ bool Instance::CreateDevice() {
         return false;
     }
 
-    static constexpr std::array queue_priorities = {1.0f};
+    // OpenXR may wait for its compositor while externally synchronizing the bound queue.
+    // Give it another queue in the same family so that wait cannot block game submissions.
+    headset_queue_index = 0;
+#ifdef ENABLE_OPENXR_HOST
+    const char* shared_queue = std::getenv("SHADPS4_XR_SHARED_QUEUE");
+    if (Core::Vr::OpenXrHost::Instance().IsAvailable() &&
+        family_properties[queue_family_index].queueCount > 1 &&
+        !(shared_queue != nullptr && shared_queue[0] == '1')) {
+        headset_queue_index = 1;
+    }
+#endif
+    static constexpr std::array queue_priorities = {1.0f, 1.0f};
     const vk::DeviceQueueCreateInfo queue_info = {
         .queueFamilyIndex = queue_family_index,
-        .queueCount = static_cast<u32>(queue_priorities.size()),
+        .queueCount = headset_queue_index + 1,
         .pQueuePriorities = queue_priorities.data(),
     };
 
@@ -704,6 +715,7 @@ bool Instance::CreateDevice() {
 
     graphics_queue = device->getQueue(queue_family_index, 0);
     present_queue = device->getQueue(queue_family_index, 0);
+    headset_queue = device->getQueue(queue_family_index, headset_queue_index);
 
     if (calibrated_timestamps) {
         const auto [time_domains_result, time_domains] =

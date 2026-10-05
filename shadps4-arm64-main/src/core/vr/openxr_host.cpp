@@ -235,6 +235,8 @@ struct OpenXrHost::Impl {
         u32 height{};
         State state{State::Free};
         PresentedFrame info;
+        vk::Semaphore ready_semaphore;
+        u64 ready_tick{};
     };
 
     struct Retired {
@@ -268,6 +270,11 @@ struct OpenXrHost::Impl {
 
     // The session, all of it the frame thread's.
     Graphics graphics{};
+    std::mutex headset_queue_mutex;
+
+    std::mutex& QueueMutex() {
+        return graphics.queue_index != 0 ? headset_queue_mutex : Vulkan::Scheduler::submit_mutex;
+    }
     std::jthread thread;
     bool device_mismatch{};
     XrSession session{XR_NULL_HANDLE};
@@ -412,6 +419,9 @@ struct OpenXrHost::Impl {
     XrPosef head_pose{{0.0f, 0.0f, 0.0f, 1.0f}, {}};
     double end_frame_time{};
     double end_frame_worst{};
+    double end_lock_time{};
+    double end_call_time{};
+    double end_call_worst{};
     double copy_time{};
     float correction{};
     float correction_worst{};
@@ -684,7 +694,7 @@ struct OpenXrHost::Impl {
         {
             // Runtimes that draw with something else underneath set up what they share with
             // this device now, on its queue.
-            std::scoped_lock lock{Vulkan::Scheduler::submit_mutex};
+            std::scoped_lock lock{QueueMutex()};
             result = xrCreateSession(instance, &session_info, &session);
         }
         if (XR_FAILED(result)) {
@@ -1160,7 +1170,7 @@ struct OpenXrHost::Impl {
 
     void DestroySwapchain() {
         if (swapchain != XR_NULL_HANDLE) {
-            std::scoped_lock lock{Vulkan::Scheduler::submit_mutex};
+            std::scoped_lock lock{QueueMutex()};
             xrDestroySwapchain(swapchain);
             swapchain = XR_NULL_HANDLE;
         }
@@ -1226,7 +1236,7 @@ struct OpenXrHost::Impl {
             view_space = XR_NULL_HANDLE;
         }
         if (session != XR_NULL_HANDLE) {
-            std::scoped_lock lock{Vulkan::Scheduler::submit_mutex};
+            std::scoped_lock lock{QueueMutex()};
             xrDestroySession(session);
             session = XR_NULL_HANDLE;
         }
@@ -1482,7 +1492,7 @@ struct OpenXrHost::Impl {
 
             XrResult begun;
             {
-                std::scoped_lock lock{Vulkan::Scheduler::submit_mutex};
+                std::scoped_lock lock{QueueMutex()};
                 begun = xrBeginFrame(session, nullptr);
             }
             if (XR_FAILED(begun)) {
@@ -1542,8 +1552,13 @@ struct OpenXrHost::Impl {
             const auto ending = Clock::now();
             XrResult ended;
             {
-                std::scoped_lock lock{Vulkan::Scheduler::submit_mutex};
+                std::scoped_lock lock{QueueMutex()};
+                const auto acquired = Clock::now();
+                end_lock_time += std::chrono::duration<double>(acquired - ending).count();
                 ended = xrEndFrame(session, &end);
+                const double call = std::chrono::duration<double>(Clock::now() - acquired).count();
+                end_call_time += call;
+                end_call_worst = std::max(end_call_worst, call);
             }
             const double took = std::chrono::duration<double>(Clock::now() - ending).count();
             end_frame_time += took;
@@ -1899,7 +1914,7 @@ struct OpenXrHost::Impl {
         {
             // Creating the images, and listing them, has some runtimes prepare them on the
             // queue.
-            std::scoped_lock lock{Vulkan::Scheduler::submit_mutex};
+            std::scoped_lock lock{QueueMutex()};
             result = xrCreateSwapchain(session, &info, &swapchain);
             if (XR_SUCCEEDED(result)) {
                 uint32_t image_count = 0;
@@ -1932,11 +1947,15 @@ struct OpenXrHost::Impl {
         vk::Image source;
         u32 width;
         u32 height;
+        vk::Semaphore ready_semaphore;
+        u64 ready_tick;
         {
             std::scoped_lock lock{slot_mutex};
             source = slots[index].image;
             width = slots[index].width;
             height = slots[index].height;
+            ready_semaphore = slots[index].ready_semaphore;
+            ready_tick = slots[index].ready_tick;
         }
         // A title with nothing to show hands over a black picture of a pixel an eye (this one
         // does while it waits for the headset to be put back on). That is not worth images of
@@ -1953,7 +1972,7 @@ struct OpenXrHost::Impl {
         uint32_t image_index = 0;
         XrResult result;
         {
-            std::scoped_lock lock{Vulkan::Scheduler::submit_mutex};
+            std::scoped_lock lock{QueueMutex()};
             XrSwapchainImageAcquireInfo acquire{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
             result = xrAcquireSwapchainImage(swapchain, &acquire, &image_index);
         }
@@ -2083,8 +2102,19 @@ struct OpenXrHost::Impl {
 
         bool submitted;
         {
-            std::scoped_lock lock{Vulkan::Scheduler::submit_mutex};
+            std::scoped_lock lock{QueueMutex()};
+            // The producer is on queue 0. A timeline wait makes its writes visible to the
+            // headset queue too; a CPU wait alone is not a device memory dependency.
+            const vk::PipelineStageFlags wait_stage = vk::PipelineStageFlagBits::eAllCommands;
+            const vk::TimelineSemaphoreSubmitInfo timeline_info = {
+                .waitSemaphoreValueCount = ready_semaphore ? 1u : 0u,
+                .pWaitSemaphoreValues = &ready_tick,
+            };
             const vk::SubmitInfo submit_info = {
+                .pNext = &timeline_info,
+                .waitSemaphoreCount = ready_semaphore ? 1u : 0u,
+                .pWaitSemaphores = &ready_semaphore,
+                .pWaitDstStageMask = &wait_stage,
                 .commandBufferCount = 1,
                 .pCommandBuffers = &cmdbuf,
             };
@@ -2095,9 +2125,20 @@ struct OpenXrHost::Impl {
         }
         if (XR_FAILED(result)) {
             NoteFrameFailure("xrReleaseSwapchainImage", result);
-            return false;
         }
-        return submitted;
+        if (submitted && graphics.queue_index != 0) {
+            // RunSession returns the source slot to the renderer immediately afterwards.
+            // On another queue it must not be overwritten until this copy (and its layout
+            // restoration) has completed. This short wait holds neither queue mutex.
+            const auto copied = device.waitForFences(fences[buffer], true, UINT64_MAX);
+            if (copied != vk::Result::eSuccess) {
+                LOG_ERROR(Core_Vr, "Headset copy completion failed: {}", vk::to_string(copied));
+                accepting = false;
+                session_lost = true;
+                return false;
+            }
+        }
+        return submitted && XR_SUCCEEDED(result);
     }
 
     /// Describes the shown frame to the compositor: where the head was when the title drew it
@@ -2180,6 +2221,11 @@ struct OpenXrHost::Impl {
                  correction_samples != 0 ? correction / static_cast<float>(correction_samples)
                                          : 0.0f,
                  correction_worst);
+        LOG_INFO(Core_Vr,
+                 "Headset queue {}: end-frame lock wait {:.2f} ms, runtime call {:.2f} ms "
+                 "({:.2f} ms at worst)",
+                 graphics.queue_index, end_lock_time / frames * 1e3,
+                 end_call_time / frames * 1e3, end_call_worst * 1e3);
         if ((has_hand_tracking || (use_grips && actions_ready)) && !controllers_used) {
             const float held = pad_samples != 0 ? 1.0f / static_cast<float>(pad_samples) : 0.0f;
             LOG_INFO(Core_Vr,
@@ -2248,6 +2294,9 @@ struct OpenXrHost::Impl {
         controller_samples = 0;
         end_frame_time = 0.0;
         end_frame_worst = 0.0;
+        end_lock_time = 0.0;
+        end_call_time = 0.0;
+        end_call_worst = 0.0;
         copy_time = 0.0;
         correction = 0.0f;
         correction_worst = 0.0f;
@@ -2481,6 +2530,8 @@ void OpenXrHost::Start(const Graphics& graphics) {
         return;
     }
     impl->graphics = graphics;
+    LOG_INFO(Core_Vr, "Headset uses Vulkan queue {} of family {} ({})", graphics.queue_index,
+             graphics.queue_family, graphics.queue_index != 0 ? "separate" : "shared");
     if (impl->use_controllers) {
         // What the title asks of the gamepad's motors, for the headset's controllers while
         // they stand in for one. (A gamepad on the PC is driven where its buttons are read.)
@@ -2527,7 +2578,8 @@ std::optional<OpenXrHost::Target> OpenXrHost::BeginFrame(u32 width, u32 height) 
     return std::nullopt;
 }
 
-void OpenXrHost::EndFrame(u32 index, const PresentedFrame& info) {
+void OpenXrHost::EndFrame(u32 index, const PresentedFrame& info, vk::Semaphore ready_semaphore,
+                        u64 ready_tick) {
     std::scoped_lock lock{impl->slot_mutex};
     Impl::Slot& slot = impl->slots[index % NumSlots];
     if (slot.state != Impl::Slot::State::Drawing) {
@@ -2535,6 +2587,8 @@ void OpenXrHost::EndFrame(u32 index, const PresentedFrame& info) {
     }
     slot.state = Impl::Slot::State::Ready;
     slot.info = info;
+    slot.ready_semaphore = ready_semaphore;
+    slot.ready_tick = ready_tick;
     impl->latest = static_cast<s32>(index % NumSlots);
     impl->delivered_frames.fetch_add(1, std::memory_order_relaxed);
     const auto now = Clock::now();

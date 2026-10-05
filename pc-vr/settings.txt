@@ -1,4 +1,4 @@
-﻿# Settings for "Play Astro Bot VR.bat", one key=value a line. Lines starting with # are ignored;
+# Settings for "Play Astro Bot VR.bat", one key=value a line. Lines starting with # are ignored;
 # what is commented out below shows the value that applies when the line is left out.
 
 # The window at the start (menu=0 to go without it) sets resolution, fps and fov below.
@@ -96,7 +96,7 @@
 
 # Extra environment variables for the emulator, as many lines as needed.
 #env=NAME=value
-resolution=2880
-fps=60
+resolution=3600
+fps=72
 fov=100
 menu=1

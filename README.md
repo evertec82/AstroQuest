@@ -1,5 +1,11 @@
 # AstroQuest
 
+This fork includes experimental PC VR performance changes: a separate Vulkan queue for
+OpenXR, configurable recovery after a drop to half refresh, Windows CPU timing diagnostics,
+and a GUI launcher for resolution and maximum framerate. Start `Play AstroQuest.bat` after
+building the Windows emulator into `pc-vr/shadps4.exe`. See the fork notes in
+[README-PC-VR.md](README-PC-VR.md#experimental-pc-performance-build).
+
 **ASTRO BOT Rescue Mission (PS4 / PlayStation VR) in virtual reality on Meta Quest 3**, played
 from your own copy of the game through a PS4 emulator. Two ways to play:
 

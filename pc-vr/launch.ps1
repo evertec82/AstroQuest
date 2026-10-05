@@ -2,7 +2,7 @@
 # Desktop, or anything else with an OpenXR runtime), and tells what is going on while it runs.
 # Started by "Play Astro Bot VR.bat"; settings are in settings.txt next to this file, and the
 # main ones can be chosen in a small window before the game starts.
-param([string]$SettingsFile = "", [switch]$NoMenu)
+param([string]$SettingsFile = "", [switch]$NoMenu, [switch]$ForceMenu)
 
 $ErrorActionPreference = "Continue"
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -537,7 +537,7 @@ function Show-Menu {
 
     # Resolution.
     $label = New-Object System.Windows.Forms.Label
-    $label.Text = "Resolution of each eye"
+    $label.Text = "Maximum resolution per eye"
     $label.Font = New-Object System.Drawing.Font("Segoe UI", 9.5, [System.Drawing.FontStyle]::Bold)
     $label.SetBounds(16, $y, 520, 20)
     $form.Controls.Add($label)
@@ -570,7 +570,7 @@ function Show-Menu {
 
     # Frame rate.
     $label = New-Object System.Windows.Forms.Label
-    $label.Text = "Frames a second, at most"
+    $label.Text = "Maximum framerate (FPS)"
     $label.Font = New-Object System.Drawing.Font("Segoe UI", 9.5, [System.Drawing.FontStyle]::Bold)
     $label.SetBounds(16, $y, 520, 20)
     $form.Controls.Add($label)
@@ -628,6 +628,10 @@ function Show-Menu {
     $again = New-Object System.Windows.Forms.CheckBox
     $again.Text = "Show this window at every start"
     $again.Checked = (Setting "menu" "1") -ne "0"
+    if ($ForceMenu) {
+        $again.Checked = $true
+        $again.Enabled = $false
+    }
     $again.SetBounds(16, $y, 300, 24)
     $form.Controls.Add($again)
 
@@ -678,7 +682,7 @@ if ($info.Count -eq 0) {
     exit 1
 }
 
-if (-not $NoMenu -and (Setting "menu" "1") -ne "0") {
+if (-not $NoMenu -and ($ForceMenu -or (Setting "menu" "1") -ne "0")) {
     if (-not (Show-Menu)) { exit 0 }
 }
 

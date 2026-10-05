@@ -11,6 +11,10 @@
 #include <ctime>
 #include <utility>
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 #include "common/assert.h"
 #include "common/debug.h"
 #include "common/logging/log.h"
@@ -276,7 +280,15 @@ float FrameStats::TakeGpuLoad() {
 
 std::chrono::nanoseconds FrameStats::ThreadTime() {
 #ifdef _WIN32
-    return std::chrono::nanoseconds{0};
+    FILETIME created{}, exited{}, kernel{}, user{};
+    if (!GetThreadTimes(GetCurrentThread(), &created, &exited, &kernel, &user)) {
+        return std::chrono::nanoseconds{0};
+    }
+    const auto ticks = [](const FILETIME& time) {
+        return (static_cast<u64>(time.dwHighDateTime) << 32) | time.dwLowDateTime;
+    };
+    // Windows reports CPU time in 100 ns units, excluding sleeps and GPU waits.
+    return std::chrono::nanoseconds{static_cast<s64>((ticks(kernel) + ticks(user)) * 100)};
 #else
     timespec time{};
     clock_gettime(CLOCK_THREAD_CPUTIME_ID, &time);

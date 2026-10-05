@@ -405,7 +405,8 @@ void VrExporter::Deliver(Frame* frame, const Core::Vr::PresentedFrame& info) {
 #ifdef ENABLE_OPENXR_HOST
         // The host copies the image as soon as it hears about the frame.
         scheduler.GetMasterSemaphore()->Wait(frame->ready_tick);
-        Core::Vr::OpenXrHost::Instance().EndFrame(static_cast<u32>(frame->host_buffer), info);
+        Core::Vr::OpenXrHost::Instance().EndFrame(static_cast<u32>(frame->host_buffer), info,
+                                                frame->ready_semaphore, frame->ready_tick);
 #endif
         return;
     }

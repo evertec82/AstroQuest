@@ -72,7 +72,8 @@ public:
     std::optional<Target> BeginFrame(u32 width, u32 height);
     /// The GPU has finished the frame drawn to target `index`, and its image has been left in
     /// the General layout.
-    void EndFrame(u32 index, const PresentedFrame& info);
+    void EndFrame(u32 index, const PresentedFrame& info, vk::Semaphore ready_semaphore,
+                  u64 ready_tick);
     /// The frame for target `index` will not be finished after all.
     void DropFrame(u32 index);
 
