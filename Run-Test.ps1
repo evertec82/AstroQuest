@@ -18,8 +18,11 @@ try {
 } finally {
     # The menu saves the selected settings before launching; archive those choices.
     Copy-Item -LiteralPath (Join-Path $pcRoot 'settings.txt') -Destination $archive -Force
-    Get-ChildItem -LiteralPath (Join-Path $pcRoot 'user/log') -File |
-        ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $archive }
+    $logFolder = Join-Path $pcRoot 'user/log'
+    if (Test-Path -LiteralPath $logFolder) {
+        Get-ChildItem -LiteralPath $logFolder -File |
+            ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $archive }
+    }
     $logPath = Join-Path $archive 'shad_log.txt'
     if (Test-Path $logPath) {
         Select-String -LiteralPath $logPath -Pattern 'Full-refresh recovery|Headset uses Vulkan queue|Headset queue|Report: Headset:|SetPace:|Change: The scene|first picture handed|title.s clock:|frame stats at|frame path:|frame shortcuts:' |
