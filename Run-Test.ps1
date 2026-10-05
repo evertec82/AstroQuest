@@ -12,7 +12,7 @@ Copy-Item -LiteralPath (Join-Path $pcRoot 'settings.txt') -Destination $archive
 @("Mode=$Mode", "Started=$(Get-Date -Format o)", "RetrySeconds=$env:SHADPS4_VR_RETRY_SECONDS",
   "FixedPace=$env:SHADPS4_VR_PACE", "ExecutableSHA256=$((Get-FileHash (Join-Path $pcRoot 'shadps4.exe')).Hash)") |
     Set-Content -LiteralPath (Join-Path $archive 'run-info.txt') -Encoding UTF8
-Write-Host "Choose resolution and maximum framerate in the settings window. Keep Virtual Desktop SSW off."
+Write-Host "Choose resolution and maximum framerate in the settings window. Disable Virtual Desktop SSW or SteamVR motion smoothing for native-FPS testing."
 try {
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $pcRoot 'launch.ps1') -ForceMenu
 } finally {

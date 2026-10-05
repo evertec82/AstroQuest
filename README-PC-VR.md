@@ -8,6 +8,21 @@ choose resolution, maximum framerate and field of view before each launch. The c
 saved in `pc-vr/settings.txt`. Set the actual headset refresh rate separately in Virtual
 Desktop; use 72 Hz and turn SSW off for the initial native-refresh test.
 
+SteamVR OpenXR is also supported by the PC host. This fork reserves the guest address
+space before loading the OpenXR runtime: the SteamVR startup failure investigated here
+occurred because the game's fixed heap address was unavailable after runtime loading.
+The title's additional memory for enlarged eye targets is prepared before that reservation.
+For SteamVR, start SteamVR and connect the headset, then select SteamVR as the active
+OpenXR runtime before launching. The launcher uses the active runtime; it does not switch
+runtime or headset refresh settings. Disable SteamVR motion smoothing when measuring
+native frame delivery.
+SteamVR idle sessions follow its session-state events rather than Virtual Desktop's
+no-picture timeout. Startup and an inactive-headset smoke test passed with SteamVR
+2.18.2. Headset gameplay and native framerate still need testing. Forcing session
+loss reproduced an access violation inside this installation's `vrclient_x64.dll`
+during session destruction; disconnect/reconnect recovery is not verified. If that
+occurs, restart the application with SteamVR and the headset already connected.
+
 - OpenXR uses a second queue in the same Vulkan graphics family when available, with a
   producer timeline semaphore and copy-completion fence. Set `SHADPS4_XR_SHARED_QUEUE=1`
   for the original shared queue behavior.

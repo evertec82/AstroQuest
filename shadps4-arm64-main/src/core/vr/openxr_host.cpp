@@ -1408,6 +1408,12 @@ struct OpenXrHost::Impl {
         if (session_lost) {
             return;
         }
+        // SteamVR legitimately returns shouldRender=false while the headset is idle or
+        // another application is visible. Its session-state events handle disconnection;
+        // the Virtual Desktop idle-session recovery heuristic must not restart it here.
+        if (runtime_name.starts_with("SteamVR")) {
+            return;
+        }
         if (state == XR_SESSION_STATE_FOCUSED) {
             if (last_wanted < state_since && now - state_since > focus_patience) {
                 LOG_INFO(Core_Vr, "The headset is on the head but its runtime asks for no "
