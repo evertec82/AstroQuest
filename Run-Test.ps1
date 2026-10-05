@@ -4,7 +4,7 @@ $pcRoot = Join-Path $PSScriptRoot 'pc-vr'
 $archive = Join-Path $PSScriptRoot ('test-logs/' + (Get-Date -Format 'yyyyMMdd-HHmmss-fff') + '-' + $Mode)
 New-Item -ItemType Directory -Force $archive | Out-Null
 $env:SHADPS4_XR_SHARED_QUEUE = '0'
-$env:SHADPS4_VR_RETRY_SECONDS = if ($Mode -eq 'Original') { '600' } else { '30' }
+$env:SHADPS4_VR_RETRY_SECONDS = if ($Mode -eq 'Original') { '600' } else { '15' }
 $env:SHADPS4_VR_PACE = if ($Mode -eq 'FullRefresh') { '1' } else { '0' }
 $env:SHADPS4_FRAME_STATS = '1'
 $env:SHADPS4_FRAME_STATS_EVERY = '5'

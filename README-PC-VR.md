@@ -11,7 +11,7 @@ Desktop; use 72 Hz and turn SSW off for the initial native-refresh test.
 - OpenXR uses a second queue in the same Vulkan graphics family when available, with a
   producer timeline semaphore and copy-completion fence. Set `SHADPS4_XR_SHARED_QUEUE=1`
   for the original shared queue behavior.
-- `Run Recovery.bat` sets `SHADPS4_VR_RETRY_SECONDS=30`. This permits another full-refresh
+- `Run Recovery.bat` sets `SHADPS4_VR_RETRY_SECONDS=15`. This permits another full-refresh
   probe sooner after temporary overload. GPU headroom checks and retry backoff remain, so
   repeated failures can delay another probe up to 120 seconds. Probes may cause judder;
   this does not make a demanding scene cheaper to render.
@@ -24,8 +24,10 @@ Desktop; use 72 Hz and turn SSW off for the initial native-refresh test.
   diagnostics and archive each session's logs and selected settings under `test-logs/`.
 
 The separate-queue build delivered roughly 72 FPS for most of a local 72 Hz session before
-falling to 36 FPS. The shortened recovery interval has passed a governor simulation but
-has not yet been validated in a headset. Release compilation, queue synchronization and
+falling to 36 FPS. The user reported better recovery with the 30-second test than with
+the original ten-minute gate. This follow-up lowers it to 15 seconds; its governor
+simulation passed, but the 15-second interval has not yet been validated in a headset.
+Release compilation, queue synchronization and
 GUI selection/persistence checks passed. Compare identical scenes and settings, including
 an easier scene after overload, before drawing performance conclusions.
 
