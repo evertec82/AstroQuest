@@ -76,6 +76,21 @@ disable Virtual Desktop SSW or SteamVR motion smoothing.
 - Upstream now provides the SteamVR address-space reservation and runtime-specific idle
   recovery behavior; those implementations are retained instead of duplicate fork patches.
 
+### Soccer-enemy timing candidate (game 1.00)
+
+A candidate fix for the level 2-2 soccer-enemy assertion changes two animation-budget
+conversions to use the console's immutable 1/60-second frame unit. The previous calculation
+multiplied the budget by the current update step, shrinking it above 60 FPS while the
+animation's duration stayed in seconds. Rendering and elapsed-time integration remain
+variable-rate. The animation-resource check and assertion are retained.
+
+This patch is verified against the local 1.00 executable's instruction bytes and refuses
+unexpected code. It is not applied to 1.04, whose locations have not been verified. Set
+`SHADPS4_TITLE_SOCCER_TIMING=0` (or `env=SHADPS4_TITLE_SOCCER_TIMING=0` in settings.txt)
+for a comparison without it. A successful patch is reported as `Soccer animation budgets
+use console 60-FPS units` in the log. It still needs a headset replay of the failing enemy
+at the same above-60 FPS settings; do not treat the candidate as a confirmed gameplay fix.
+
 The previous performance build was confirmed working in user testing. That does not verify
 this merged build's headset gameplay or every upstream change. Earlier sessions at 72 FPS
 hit a game assertion in `MupSoccerEnemy.cpp:1650`; its cause is unresolved. Upstream's 0.20

@@ -105,6 +105,10 @@ struct Build {
     /// The end of the function that has that world take a step (PhysicsStepChanges); places
     /// of no bytes fill the list up.
     std::array<Change, 4> physics_step;
+    /// Console-frame units used by the soccer enemy's animation budget. Zero where the
+    /// corresponding instructions have not been verified in that game build.
+    u64 soccer_nominal_seconds{};
+    std::array<u64, 2> soccer_budget_reads{};
 };
 
 inline constexpr std::array<Build, 2> Known{{
@@ -136,6 +140,8 @@ inline constexpr std::array<Build, 2> Known{{
                           {0xc2dea8, 0x0449bfe900002760, 0x000449c0e8575750, 8},
                           {0xc2deb0, 0x9090909090909000, 0x0027608789585f5f, 8},
                           {0xc2deb8, 0x9090909090909090, 0x909090909090c300, 8}}},
+        .soccer_nominal_seconds = 0x10d1694,
+        .soccer_budget_reads = {0x843133, 0x8438ea},
     },
     {
         .name = "1.04, the last update",
@@ -232,6 +238,27 @@ inline std::vector<Change> PhysicsStepChanges(const Build& build) {
         if (change.bytes != 0) {
             changes.push_back(change);
         }
+    }
+    return changes;
+}
+
+/// The soccer enemy compares an animation's duration in seconds against tuning expressed
+/// in console frames. Its two budget conversions used the current update step: at 72 FPS
+/// a budget intended for 60 FPS shrinks to 5/6 and the check at MupSoccerEnemy.cpp:1650
+/// can assert. Read the immutable console frame unit for those conversions only. Elapsed
+/// time integration, animation playback, the null-resource branch and assertion remain.
+/// Verified for 1.00; do not infer 1.04 code locations from the other build.
+inline std::vector<Change> SoccerTimingChanges(const Build& build) {
+    if (build.soccer_nominal_seconds == 0) {
+        return {};
+    }
+    std::vector<Change> changes{
+        {build.soccer_nominal_seconds, 0x3c888889, 0x3c888889, 4},
+    };
+    for (const u64 at : build.soccer_budget_reads) {
+        // vmovss xmm0, [rbp-0x2598] -> vmovss xmm0, [rip+console_frame_seconds]
+        const u64 displacement = static_cast<u32>(build.soccer_nominal_seconds - (at + 8));
+        changes.push_back({at, 0xffffda688510fac5, (displacement << 32) | 0x0510fac5, 8});
     }
     return changes;
 }

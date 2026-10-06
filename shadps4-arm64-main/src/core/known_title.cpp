@@ -940,6 +940,21 @@ void OnGameLoaded(VAddr base, u64 size) {
                            "were sent with");
         }
     }
+    if (GetSettings().time_step) {
+        const char* value = std::getenv("SHADPS4_TITLE_SOCCER_TIMING");
+        if (value == nullptr || std::atoi(value) != 0) {
+            const auto changes = Builds::SoccerTimingChanges(*build);
+            if (changes.empty()) {
+                LOG_WARNING(Core, "Soccer animation timing fix is not verified for {}", build->name);
+            } else if (const auto* unexpected = Builds::Apply(image, changes)) {
+                LOG_WARNING(Core, "Soccer animation timing fix refused: unexpected bytes at {:#x}",
+                            unexpected->at);
+            } else {
+                LOG_INFO(Core, "Soccer animation budgets use console 60-FPS units; rendering "
+                               "and elapsed-time integration remain variable-rate");
+            }
+        }
+    }
     known_base = base;
     known_build.store(build, std::memory_order_release);
 }
