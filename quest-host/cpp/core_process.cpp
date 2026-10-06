@@ -393,6 +393,8 @@ void ServeMicrophone(int fd, uint32_t sample_rate, const MicrophoneSettings& set
                            : settings.test_signal ? ": a test signal stands in for it" : "");
     const auto started = Clock::now();
     uint64_t generated = 0;
+    bool was_made = false;
+    bool blow_reported = false;
     uint32_t noise = 0x2545f491;
     while (true) {
         // The guest says nothing more on this connection; it ends by closing it.
@@ -402,8 +404,16 @@ void ServeMicrophone(int fd, uint32_t sample_rate, const MicrophoneSettings& set
                               errno != EINTR)) {
             break;
         }
-        if (!settings.enabled) {
-            ::usleep(100'000);
+        // Blowing with buttons is heard whatever the microphone is, or is allowed to be.
+        const bool blown =
+            settings.blowing != nullptr && settings.blowing->load(std::memory_order_relaxed);
+        if (blown && !blow_reported) {
+            blow_reported = true;
+            LOGI("microphone: the player blows with buttons, the game hears that instead");
+        }
+        if (!settings.enabled && !blown) {
+            was_made = false;
+            ::usleep(50'000);
             continue;
         }
 
@@ -432,17 +442,26 @@ void ServeMicrophone(int fd, uint32_t sample_rate, const MicrophoneSettings& set
             reported = now;
         }
         int32_t frames = 0;
-        if (settings.test_signal) {
+        const bool made = settings.test_signal || blown;
+        if (!made) {
+            was_made = false;
+        }
+        if (made) {
             // By the clock, a fiftieth of a second at a time.
             const auto due = static_cast<uint64_t>(
                 std::chrono::duration<double>(now - started).count() * sample_rate);
+            if (!was_made) {
+                // (Nothing is owed for the time the microphone spoke for itself.)
+                was_made = true;
+                generated = due;
+            }
             if (due - generated < samples.size() / 2) {
                 ::usleep(2'000);
                 continue;
             }
             frames = static_cast<int32_t>(samples.size() / 2);
             // Evenly distributed noise of this amplitude has a root mean square of 0.35.
-            const bool blowing = generated % (5ull * sample_rate) < sample_rate;
+            const bool blowing = blown || generated % (5ull * sample_rate) < sample_rate;
             for (size_t i = 0; i < samples.size(); ++i) {
                 noise ^= noise << 13;
                 noise ^= noise >> 17;
@@ -472,7 +491,7 @@ void ServeMicrophone(int fd, uint32_t sample_rate, const MicrophoneSettings& set
             reported_failure = false;
         }
 
-        if (!settings.test_signal) {
+        if (!made) {
             frames = input.Read(samples.data(), static_cast<int32_t>(samples.size() / 2));
         }
         if (frames < 0) {
@@ -486,8 +505,10 @@ void ServeMicrophone(int fd, uint32_t sample_rate, const MicrophoneSettings& set
         }
 
         const size_t count = static_cast<size_t>(frames) * 2;
+        // (What buttons blow is as loud as blowing gets, whatever the microphone needs.)
+        const float gain = blown ? 1.0f : settings.gain;
         for (size_t i = 0; i < count; ++i) {
-            const float amplified = static_cast<float>(samples[i]) * settings.gain;
+            const float amplified = static_cast<float>(samples[i]) * gain;
             samples[i] = static_cast<int16_t>(std::clamp(amplified, -32768.0f, 32767.0f));
             const double sample = samples[i] / 32768.0;
             block_squares += sample * sample;
@@ -1015,7 +1036,9 @@ void CoreProcess::AudioLoop() {
         }
         // The guest opens and closes ports as it likes; each lives until its socket closes,
         // which happens at the latest when the core exits.
-        std::thread{ServeAudio, fd, microphone}.detach();
+        MicrophoneSettings settings = microphone;
+        settings.blowing = blowing;
+        std::thread{ServeAudio, fd, settings}.detach();
     }
 }
 

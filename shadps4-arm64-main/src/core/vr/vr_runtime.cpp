@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <string>
@@ -13,6 +14,7 @@
 #include "common/logging/log.h"
 #include "common/path_util.h"
 #include "core/libraries/system/systemservice.h"
+#include "core/vr/headset_fov_cache.h"
 #include "core/vr/vr_host_link.h"
 #include "core/vr/vr_runtime.h"
 #ifdef ENABLE_OPENXR_HOST
@@ -32,29 +34,6 @@ Quat Multiply(const Quat& a, const Quat& b) {
 
 Quat Conjugate(const Quat& q) {
     return {-q.x, -q.y, -q.z, q.w};
-}
-
-Quat Normalize(const Quat& q) {
-    const float length = std::sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w);
-    if (length < 1e-6f) {
-        return {};
-    }
-    return {q.x / length, q.y / length, q.z / length, q.w / length};
-}
-
-Vec3 Rotate(const Quat& q, const Vec3& v) {
-    // v' = v + 2 * cross(q.xyz, cross(q.xyz, v) + q.w * v)
-    const Vec3 u{q.x, q.y, q.z};
-    const Vec3 t{
-        u.y * v.z - u.z * v.y + q.w * v.x,
-        u.z * v.x - u.x * v.z + q.w * v.y,
-        u.x * v.y - u.y * v.x + q.w * v.z,
-    };
-    return {
-        v.x + 2.0f * (u.y * t.z - u.z * t.y),
-        v.y + 2.0f * (u.z * t.x - u.x * t.z),
-        v.z + 2.0f * (u.x * t.y - u.y * t.x),
-    };
 }
 
 Quat FromYawPitch(float yaw, float pitch) {
@@ -110,6 +89,16 @@ bool EnvFlag(const char* name, bool& out) {
     }
     out = value[0] != '0';
     return true;
+}
+
+std::filesystem::path OwnPadPlacePath() {
+    return Common::FS::GetUserPath(Common::FS::PathType::UserDir) / "vr_controller.json";
+}
+
+/// How far from the standard place the player's own may be: within reach, and before them.
+Vec3 WithinReach(const Vec3& offset) {
+    return {std::clamp(offset.x, -0.40f, 0.40f), std::clamp(offset.y, -0.70f, 0.30f),
+            std::clamp(offset.z, -0.90f, -0.15f)};
 }
 
 FileConfig LoadFileConfig() {
@@ -176,6 +165,9 @@ FileConfig LoadFileConfig() {
     if (const char* of = std::getenv("SHADPS4_VR_FOV_OF"); of != nullptr) {
         result.config.fov_from_headset = std::string_view{of} == "headset";
     }
+    if (const char* symmetric = std::getenv("SHADPS4_VR_FOV_SYMMETRIC"); symmetric != nullptr) {
+        result.config.fov_symmetric = std::string_view{symmetric} == "1";
+    }
     if (const char* fov = std::getenv("SHADPS4_VR_FOV"); fov != nullptr && *fov != '\0') {
         result.config.fov_scale =
             std::clamp(static_cast<float>(std::atof(fov)) / 100.0f, 0.5f, 1.2f);
@@ -200,6 +192,33 @@ Runtime& Runtime::Instance() {
 void Runtime::Configure(bool psvr_supported, bool psvr_required) {
     const FileConfig file_config = LoadFileConfig();
     config = file_config.config;
+    if (std::ifstream file{OwnPadPlacePath()}; file) {
+        const auto json = nlohmann::json::parse(file, nullptr, false);
+        if (const auto it = json.is_object() ? json.find("own_place") : json.end();
+            it != json.end() && it->is_array() && it->size() == 3 && (*it)[0].is_number() &&
+            (*it)[1].is_number() && (*it)[2].is_number()) {
+            own_pad_offset = WithinReach(
+                {(*it)[0].get<float>(), (*it)[1].get<float>(), (*it)[2].get<float>()});
+        }
+    }
+    // An external host can measure its headset before starting this process. Seed the same
+    // optics path the PC OpenXR host uses, so the title's first FOV query cannot race IPC or
+    // accidentally fall back to a PlayStation VR's projection on the first launch.
+    if (const char* optics = std::getenv("SHADPS4_VR_HEADSET_FOV_TAN"); optics != nullptr) {
+        Fov fov{};
+        char trailing{};
+        const int count = std::sscanf(optics, "%f,%f,%f,%f %c", &fov.tan_out, &fov.tan_in,
+                                      &fov.tan_top, &fov.tan_bottom, &trailing);
+        const auto usable = [](float value) {
+            return std::isfinite(value) && value > 0.1f && value < 10.0f;
+        };
+        if (count == 4 && usable(fov.tan_out) && usable(fov.tan_in) && usable(fov.tan_top) &&
+            usable(fov.tan_bottom)) {
+            NoteHeadsetFov(fov);
+        } else {
+            LOG_WARNING(Core_Vr, "Ignoring invalid SHADPS4_VR_HEADSET_FOV_TAN");
+        }
+    }
     switch (file_config.mode) {
     case HeadsetMode::On:
         config.headset_connected = true;
@@ -270,12 +289,18 @@ void Runtime::RecenterSeatLocked() {
         pad_attitude = Normalize(Multiply(turned, pad_attitude));
         pad.pose.orientation = pad_attitude;
     }
+    if (view_turn != 0.0f && !pad_attitude_valid && !pad_position_tracked) {
+        // A controller that nothing knows anything of was turned with the player (TurnView):
+        // it points straight ahead again, as they face.
+        pad.pose.orientation = {};
+    }
     previous_seat_position = seat_position;
     previous_seat_yaw = seat_yaw;
     seat_changed = std::chrono::steady_clock::now();
     seat_position = host_head.pose.position;
     seat_yaw = yaw;
     seat_valid = true;
+    view_turn = 0.0f;
     PlaceHead();
     // Where the controller was seen is of the old seat; the host says where it is every frame.
     pad_seen = false;
@@ -301,6 +326,63 @@ void Runtime::FixSeat() {
     seat_yaw = {};
     seat_valid = true;
     title_asked = true;
+}
+
+void Runtime::TurnView(int steps) {
+    static const float step = [] {
+        float degrees = 30.0f;
+        if (const char* value = std::getenv("SHADPS4_VR_TURN"); value != nullptr && *value != '\0') {
+            degrees = std::clamp(static_cast<float>(std::atof(value)), 0.0f, 90.0f);
+        }
+        return degrees / 57.29578f;
+    }();
+    if (steps == 0 || step == 0.0f) {
+        return;
+    }
+    std::scoped_lock lock{mutex};
+    if (!seat_valid || !host_head.tracked) {
+        return;
+    }
+    // (Angles about +Y count to the left.)
+    const float left = -step * static_cast<float>(steps);
+    // What the title sees of the player turns by this; the seat, in the headset's own
+    // space, by as much the other way.
+    const Quat turn = FromAxisAngle({0.0f, 1.0f, 0.0f}, left);
+    const Quat seat_turn = Conjugate(turn);
+    previous_seat_position = seat_position;
+    previous_seat_yaw = seat_yaw;
+    seat_changed = std::chrono::steady_clock::now();
+    // The seat turns about the head: the head stays where it is in the title's world.
+    const Vec3& at = host_head.pose.position;
+    const Vec3 from_seat = Rotate(
+        seat_turn, {at.x - seat_position.x, at.y - seat_position.y, at.z - seat_position.z});
+    seat_position = {at.x - from_seat.x, at.y - from_seat.y, at.z - from_seat.z};
+    seat_yaw = Normalize(Multiply(seat_turn, seat_yaw));
+    view_turn += left;
+    PlaceHead();
+    // The controller is in the player's hands and turns with them. One that a host locates is
+    // placed anew with every pose; one that is not keeps its place before the player (see
+    // GetPad) and, by its own sensors, the way it points from there.
+    if (pad_attitude_valid) {
+        pad_attitude = Normalize(Multiply(turn, pad_attitude));
+    }
+    if (!pad_position_tracked) {
+        // (Also one that nothing has ever said anything of: it points straight ahead of the
+        // player, whichever way that is.)
+        pad.pose.orientation =
+            pad_attitude_valid ? pad_attitude : Normalize(Multiply(turn, pad.pose.orientation));
+        ++pad.sequence;
+    }
+    pad_seen_offset = Rotate(turn, pad_seen_offset);
+    pad_seen = false;
+    pad_shown_valid = false;
+    pad_yaw_reference_valid = false;
+    LOG_INFO(Core_Vr,
+             "The view turns a step to the {}: the head stays at {:.2f} {:.2f} {:.2f} of the "
+             "title's space and faces {:.0f} degrees to the left of where it faced when the "
+             "view was last reset",
+             steps > 0 ? "right" : "left", head.pose.position.x, head.pose.position.y,
+             head.pose.position.z, view_turn * 57.29578f);
 }
 
 void Runtime::RequestRecenter() {
@@ -358,6 +440,7 @@ void Runtime::UpdatePad(const DeviceState& host_state) {
     pad.sequence = sequence;
     pad.tracked = true;
     pad_position_tracked = true;
+    pad_host_pose_time = std::chrono::steady_clock::now();
 }
 
 void Runtime::ReleasePad() {
@@ -371,7 +454,8 @@ void Runtime::ReleasePad() {
     pad_shown_position = pad.pose.position;
     pad_shown_valid = true;
     pad_shown_time = std::chrono::steady_clock::now();
-    pad.pose.orientation = pad_attitude_valid ? pad_attitude : Quat{};
+    pad.pose.orientation =
+        pad_attitude_valid ? pad_attitude : FromAxisAngle({0.0f, 1.0f, 0.0f}, view_turn);
     pad.linear_velocity = {};
     pad.angular_velocity = {};
     ++pad.sequence;
@@ -381,6 +465,15 @@ void Runtime::UpdatePadOrientation(const Quat& orientation, const Vec3& angular_
     std::scoped_lock lock{mutex};
     pad.pose.orientation = orientation;
     pad.angular_velocity = angular_velocity;
+    ++pad.sequence;
+    pad.tracked = true;
+    pad_position_tracked = false;
+}
+
+void Runtime::UpdatePadHeldOrientation(const Quat& host_orientation) {
+    std::scoped_lock lock{mutex};
+    pad.pose.orientation = Normalize(Multiply(Conjugate(seat_yaw), host_orientation));
+    pad.angular_velocity = {};
     ++pad.sequence;
     pad.tracked = true;
     pad_position_tracked = false;
@@ -464,6 +557,12 @@ void Runtime::UpdatePadGyro(const Vec3& angular_velocity) {
         pad_attitude = Normalize(pad_attitude);
     }
 
+    // A host that says where the controller is and how it is turned (the headset's own
+    // controller, standing in for it) is believed over the sensors of a gamepad that is
+    // there as well, on a desk: those only keep count of how that one is turned.
+    if (pad_position_tracked && now - pad_host_pose_time < std::chrono::milliseconds{200}) {
+        return;
+    }
     pad.pose.orientation = pad_attitude;
     pad.angular_velocity = Rotate(pad_attitude, angular_velocity);
     ++pad.sequence;
@@ -566,6 +665,38 @@ void Runtime::SetPadOffset(const Vec3& offset) {
     pad_seen_offset_valid = false;
 }
 
+void Runtime::MoveOwnPadPlace(const Vec3& by) {
+    Vec3 place;
+    {
+        std::scoped_lock lock{mutex};
+        own_pad_offset =
+            WithinReach({own_pad_offset.x + by.x, own_pad_offset.y + by.y, own_pad_offset.z + by.z});
+        own_pad_place = true;
+        place = own_pad_offset;
+    }
+    LOG_INFO(Core_Vr,
+             "The controller, while nothing sees where it is, is held to be at the player's own "
+             "place: {:.2f} m to the right of the eyes, {:.2f} below and {:.2f} ahead",
+             place.x, -place.y, -place.z);
+    std::ofstream file{OwnPadPlacePath()};
+    file << nlohmann::json{{"own_place", {place.x, place.y, place.z}}}.dump() << "\n";
+}
+
+void Runtime::SwitchPadPlace() {
+    bool own;
+    Vec3 place;
+    {
+        std::scoped_lock lock{mutex};
+        own_pad_place = !own_pad_place;
+        own = own_pad_place;
+        place = own ? own_pad_offset : config.pad_offset;
+    }
+    LOG_INFO(Core_Vr,
+             "The controller, while nothing sees where it is, is held to be at {} place: {:.2f} "
+             "m to the right of the eyes, {:.2f} below and {:.2f} ahead",
+             own ? "the player's own" : "the standard", place.x, -place.y, -place.z);
+}
+
 void Runtime::UpdatePadYawReference(float yaw) {
     std::scoped_lock lock{mutex};
     // The host counts the heading from its own straight ahead.
@@ -630,6 +761,14 @@ void Runtime::UpdateOptics(const Fov& fov, float ipd) {
     config.ipd = ipd;
 }
 
+void Runtime::SetHeadsetIdentity(const HeadsetIdentity& identity) {
+    std::scoped_lock lock{mutex};
+    if (headset_identity != identity) {
+        headset_identity = identity;
+        has_headset_fov = false;
+    }
+}
+
 namespace {
 
 std::filesystem::path HeadsetFovPath() {
@@ -644,6 +783,7 @@ float Degrees(float tangent) {
 
 void Runtime::NoteHeadsetFov(const Fov& fov) {
     bool changed;
+    HeadsetIdentity identity;
     {
         std::scoped_lock lock{mutex};
         const auto differs = [](float a, float b) { return std::abs(Degrees(a) - Degrees(b)) > 0.5f; };
@@ -653,6 +793,7 @@ void Runtime::NoteHeadsetFov(const Fov& fov) {
                   differs(fov.tan_bottom, headset_fov.tan_bottom);
         headset_fov = fov;
         has_headset_fov = true;
+        identity = headset_identity;
     }
     headset_fov_known.notify_all();
     if (!changed) {
@@ -664,9 +805,14 @@ void Runtime::NoteHeadsetFov(const Fov& fov) {
              Degrees(fov.tan_out), Degrees(fov.tan_in), Degrees(fov.tan_top),
              Degrees(fov.tan_bottom), Degrees(fov.tan_out) + Degrees(fov.tan_in),
              Degrees(fov.tan_top) + Degrees(fov.tan_bottom));
-    // For the next start, when the title asks before the headset has said.
+    if (identity.runtime.empty() || identity.system.empty()) {
+        return;
+    }
     std::ofstream file{HeadsetFovPath()};
-    file << nlohmann::json{{"fov_tan", {fov.tan_out, fov.tan_in, fov.tan_top, fov.tan_bottom}}}
+    file << nlohmann::json{{"runtime", identity.runtime},
+                          {"system", identity.system},
+                          {"vendor_id", identity.vendor_id},
+                          {"fov_tan", {fov.tan_out, fov.tan_in, fov.tan_top, fov.tan_bottom}}}
                 .dump()
          << "\n";
 }
@@ -695,30 +841,28 @@ Fov Runtime::TitleFov() {
         }
     }
     if (from == nullptr) {
-        // As the headset showed it the last time.
         std::ifstream file{HeadsetFovPath()};
         const auto json = file ? nlohmann::json::parse(file, nullptr, false) : nlohmann::json{};
-        const auto usable = [](const nlohmann::json& tangents) {
-            if (!tangents.is_array() || tangents.size() != 4) {
-                return false;
-            }
-            for (const auto& tangent : tangents) {
-                if (!tangent.is_number() || tangent.get<float>() < 0.1f ||
-                    tangent.get<float>() > 10.0f) {
-                    return false;
-                }
-            }
-            return true;
-        };
-        if (json.is_object() && json.contains("fov_tan") && usable(json["fov_tan"])) {
-            base = {json["fov_tan"][0].get<float>(), json["fov_tan"][1].get<float>(),
-                    json["fov_tan"][2].get<float>(), json["fov_tan"][3].get<float>()};
+        std::scoped_lock lock{mutex};
+        if (has_headset_fov) {
+            base = headset_fov;
+            from = "the headset's own";
+        } else if (const auto cached = CachedHeadsetFov(json, headset_identity)) {
+            base = *cached;
             from = "the headset's, as it was the last time (it has not said yet)";
         } else {
             from = "a PlayStation VR's (the headset has not said what it shows)";
         }
     }
     const float scale = config.fov_scale;
+    if (config.fov_symmetric) {
+        // Scaling asymmetric per-eye bounds also shrinks the binocular overlap: directions
+        // visible on one eye's temple side become black on the other's nose side. Render an
+        // encompassing, centred frustum in both eyes instead. At 100% it covers the entire
+        // real headset; the compositor clips the extra area to the actual lens bounds.
+        base.tan_out = base.tan_in = std::max(base.tan_out, base.tan_in);
+        base.tan_top = base.tan_bottom = std::max(base.tan_top, base.tan_bottom);
+    }
     const Fov fov{base.tan_out * scale, base.tan_in * scale, base.tan_top * scale,
                   base.tan_bottom * scale};
     {
@@ -726,9 +870,10 @@ Fov Runtime::TitleFov() {
         config.fov = fov;
     }
     LOG_INFO(Core_Vr,
-             "The title draws {:.0f}% of {}: {:.1f}/{:.1f}/{:.1f}/{:.1f} degrees an eye (out, in, "
+             "The title draws {:.0f}% of {}{}: {:.1f}/{:.1f}/{:.1f}/{:.1f} degrees an eye (out, in, "
              "up, down)",
-             scale * 100.0f, from, Degrees(fov.tan_out), Degrees(fov.tan_in), Degrees(fov.tan_top),
+             scale * 100.0f, config.fov_symmetric ? "the symmetric render envelope of " : "", from,
+             Degrees(fov.tan_out), Degrees(fov.tan_in), Degrees(fov.tan_top),
              Degrees(fov.tan_bottom));
     return fov;
 }
@@ -837,7 +982,15 @@ DeviceState Runtime::GetPad() {
                            pad_seen_position.z - pad_anchor.z};
         pad_seen_offset_valid = true;
     }
-    const Vec3& assumed = pad_seen_offset_valid ? pad_seen_offset : config.pad_offset;
+    // (The player's own place is theirs to say: it counts for more than where the controller
+    // was last seen.)
+    // (Its own place and the standard one are before the player whichever way TurnView has
+    // them face; where it was seen is where it was seen.)
+    const Vec3 assumed =
+        !own_pad_place && pad_seen_offset_valid
+            ? pad_seen_offset
+            : Rotate(FromAxisAngle({0.0f, 1.0f, 0.0f}, view_turn),
+                     own_pad_place ? own_pad_offset : config.pad_offset);
     const Vec3 goal = seen ? pad_seen_position
                            : Vec3{pad_anchor.x + assumed.x, pad_anchor.y + assumed.y,
                                   pad_anchor.z + assumed.z};

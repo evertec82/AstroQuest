@@ -63,8 +63,12 @@ public:
     /// emulator delivers values that are display-ready already. Where the GPU can be told to
     /// leave that encoding out, the frame is written as it is; elsewhere it is decoded first,
     /// which costs a power function per pixel.
+    /// `reduced_fov` rounds each eye's boundary into a feathered squircle. The game already
+    /// rendered the narrower projection; masking its corners preserves its pixel density.
+    /// `fov` is that frame's out/in/up/down tangents: the aperture follows each eye's optical
+    /// axis, which need not be at the centre of an asymmetric projection's texture.
     void Draw(GLuint texture, uint32_t width, uint32_t height, bool swap_red_blue,
-              bool srgb_target) const;
+              bool srgb_target, bool reduced_fov = false, const float* fov = nullptr) const;
 
     /// Whether frames go into sRGB targets unchanged (see Draw).
     bool WritesUnencoded() const {
@@ -76,5 +80,7 @@ private:
     GLuint vertex_array{};
     GLint uniform_swap{-1};
     GLint uniform_decode{-1};
+    GLint uniform_mask{-1};
+    GLint uniform_fov{-1};
     bool write_control{};
 };

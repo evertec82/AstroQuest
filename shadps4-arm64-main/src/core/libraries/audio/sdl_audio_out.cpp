@@ -81,8 +81,36 @@ static bool SDLCALL LogDeviceEvent(void*, SDL_Event* event) {
                  event->adevice.recording ? "input" : "output",
                  event->type == SDL_EVENT_AUDIO_DEVICE_ADDED ? "added" : "removed",
                  name ? name : "?", id);
+#ifdef ENABLE_OPENXR_HOST
+        // Which device is the headset's may have changed with that: a runtime that streams to
+        // a headset has its devices only while it does.
+        Core::Vr::OpenXrHost::Instance().AudioDevicesChanged();
+#endif
     }
     return true;
+}
+
+/// The device the system plays on by default, as the device it is. Never "the default device"
+/// itself: ports opened on that are moved by SDL when the system's choice changes, and SDL
+/// (3.5.0) leaves the list it moves them into in a state in which closing one of them later
+/// frees memory its playback thread still reads (SDL_DefaultAudioDeviceChanged does not set
+/// the back link of the port it puts in front): the emulator stopped with an access violation
+/// in SDL_GetAudioStreamDataAdjustGain a moment after a port left such a device. A port
+/// opened on a device of its own stays where it is, and FollowDevice moves it.
+static SDL_AudioDeviceID DefaultPlaybackDevice() {
+    const char* default_name = SDL_GetAudioDeviceName(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK);
+    int count = 0;
+    SDL_AudioDeviceID* devices = SDL_GetAudioPlaybackDevices(&count);
+    SDL_AudioDeviceID found = SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK;
+    for (int i = 0; default_name != nullptr && devices != nullptr && i < count; ++i) {
+        const char* name = SDL_GetAudioDeviceName(devices[i]);
+        if (name != nullptr && std::strcmp(name, default_name) == 0) {
+            found = devices[i];
+            break;
+        }
+    }
+    SDL_free(devices);
+    return found;
 }
 
 class SDLPortBackend : public PortBackend {
@@ -242,7 +270,8 @@ private:
         if (device_name == "None") {
             return;
         }
-        const SDL_AudioDeviceID dev_id = SelectAudioDevice(device_name, true);
+        const Choice choice = SelectAudioDevice(device_name, true);
+        const SDL_AudioDeviceID dev_id = choice.device;
         if (stream && dev_id == opened_device) {
             pending_device = SDL_INVALID_AUDIODEVICEID;
             return;
@@ -261,10 +290,15 @@ private:
         static std::mutex moving;
         std::scoped_lock one{moving};
         if (stream) {
-            if (dev_id == SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK) {
+            const char* name = SDL_GetAudioDeviceName(dev_id);
+            if (choice.stands_in) {
                 LOG_WARNING(Lib_AudioOut,
-                            "Audio device '{}' went away: the sound moves to the system's default",
-                            device_name);
+                            "Audio device '{}' went away: the sound moves to the system's "
+                            "default, '{}'",
+                            device_name, name ? name : "?");
+            } else if (choice.systems) {
+                LOG_INFO(Lib_AudioOut, "The system now plays on '{}': the sound moves to it",
+                         name ? name : "?");
             } else {
                 LOG_INFO(Lib_AudioOut, "Audio device '{}' is there: the sound moves to it",
                          device_name);
@@ -371,7 +405,8 @@ private:
 
         // Determine device
         const std::string device_name = GetDeviceName();
-        const SDL_AudioDeviceID dev_id = SelectAudioDevice(device_name, false);
+        const Choice choice = SelectAudioDevice(device_name, false);
+        const SDL_AudioDeviceID dev_id = choice.device;
 
         if (dev_id == SDL_INVALID_AUDIODEVICEID) {
             return false;
@@ -406,28 +441,34 @@ private:
             return false;
         }
 
-        const char* default_name = SDL_GetAudioDeviceName(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK);
-        const bool stands_in = dev_id == SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK &&
-                               !device_name.empty() && device_name != "Default Device" &&
-                               (default_name == nullptr || device_name != default_name);
-        LOG_INFO(Lib_AudioOut,
-                 "Opened audio device: {} ({} Hz, {} ch{}, gain: {:.3f})",
-                 stands_in ? "the system's default" : device_name, sample_rate, num_channels,
+        const char* opened_name = SDL_GetAudioDeviceName(dev_id);
+        LOG_INFO(Lib_AudioOut, "Opened audio device: {}{} ({} Hz, {} ch{}, gain: {:.3f})",
+                 opened_name ? opened_name : "?",
+                 choice.stands_in ? ", the system's default" : "", sample_rate, num_channels,
                  virtualizer ? " rendered for two speakers at the ears" : "", initial_gain);
         return true;
     }
 
+    /// The device a port is to play on. `systems`: it is the one the system plays on by
+    /// default, because the port is left to the system; `stands_in`: or because the device the
+    /// port is meant for is not there.
+    struct Choice {
+        SDL_AudioDeviceID device{SDL_INVALID_AUDIODEVICEID};
+        bool systems{};
+        bool stands_in{};
+    };
+
     /// The device of that name, or the system's default when there is none (said in the log
     /// unless `quiet`).
-    SDL_AudioDeviceID SelectAudioDevice(const std::string& device_name, bool quiet) {
+    Choice SelectAudioDevice(const std::string& device_name, bool quiet) {
         if (device_name == "None") {
             LOG_INFO(Lib_AudioOut, "Audio device disabled for port type {}",
                      static_cast<int>(port_type));
-            return SDL_INVALID_AUDIODEVICEID;
+            return {};
         }
 
         if (device_name.empty() || device_name == "Default Device") {
-            return SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK;
+            return {.device = DefaultPlaybackDevice(), .systems = true};
         }
 
         // Search for specific device
@@ -438,7 +479,7 @@ private:
             if (!quiet) {
                 LOG_WARNING(Lib_AudioOut, "No audio devices found, using default");
             }
-            return SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK;
+            return {.device = DefaultPlaybackDevice(), .stands_in = true};
         }
 
         SDL_AudioDeviceID selected_device = SDL_INVALID_AUDIODEVICEID;
@@ -458,17 +499,9 @@ private:
                 LOG_WARNING(Lib_AudioOut, "Audio device '{}' not found, using default",
                             device_name);
             }
-            return SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK;
+            return {.device = DefaultPlaybackDevice(), .stands_in = true};
         }
-
-        // Where it is the system's default, the port plays on that: SDL moves such a stream
-        // by itself when the default changes, which is what happens when the device goes
-        // away and when it comes back. (Opening the device anew in those moments is not safe.)
-        const char* default_name = SDL_GetAudioDeviceName(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK);
-        if (default_name != nullptr && device_name == default_name) {
-            return SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK;
-        }
-        return selected_device;
+        return {.device = selected_device};
     }
 
     bool ConfigureChannelMap() {

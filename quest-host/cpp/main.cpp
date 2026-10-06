@@ -18,6 +18,7 @@
 
 #include "core_process.h"
 #include "log.h"
+#include "pad_router.h"
 #include "xr_host.h"
 
 namespace {
@@ -31,8 +32,9 @@ struct App {
     std::thread xr_thread;
     std::atomic<bool> quit{};
     std::atomic<uint32_t> recenter_requests{};
-    std::mutex pad_mutex;
-    PadState pad;
+    /// What the game is played with: a gamepad the activity hears of, the headset's own
+    /// controllers the session reads, or both.
+    PadRouter pads;
 };
 
 std::unique_ptr<App> g_app;
@@ -65,13 +67,21 @@ extern "C" {
 JNIEXPORT void JNICALL Java_com_astrobotquest_vrhost_MainActivity_nativeStartXr(
     JNIEnv* env, jobject activity, jfloat refresh_rate, jint eye_width, jint eye_height,
     jboolean track_hands, jint sharpen, jboolean cubic, jboolean show_stats, jfloat predict_ms,
-    jint dynamic_resolution, jboolean cpu_boost) {
+    jint dynamic_resolution, jboolean cpu_boost, jboolean own_controllers, jint pad_hand,
+    jfloat pad_tilt, jboolean rumble, jboolean stick_touchpad) {
     if (g_app) {
         return;
     }
     g_app = std::make_unique<App>();
     env->GetJavaVM(&g_app->vm);
     g_app->activity = env->NewGlobalRef(activity);
+    g_app->pads.SetStickTouchpad(stick_touchpad == JNI_TRUE);
+    g_app->pads.SetPadHand(pad_hand);
+    g_app->pads.SetNotice([](const char* text) { LOGI("%s", text); });
+    g_app->pads.SetSink([app = g_app.get()](const PadRouter::Output& output) {
+        app->core.SetPad(output.pad);
+        app->core.SetBlowing(output.blowing);
+    });
 
     XrHostOptions options;
     options.refresh_rate = refresh_rate;
@@ -85,6 +95,10 @@ JNIEXPORT void JNICALL Java_com_astrobotquest_vrhost_MainActivity_nativeStartXr(
     options.dynamic_resolution = dynamic_resolution != 0;
     options.follow_layer_size = dynamic_resolution == 2;
     options.cpu_boost = cpu_boost == JNI_TRUE;
+    options.own_controllers = own_controllers == JNI_TRUE;
+    options.pad_hand = pad_hand == 0 ? 0 : 1;
+    options.pad_tilt = pad_tilt;
+    options.rumble = rumble == JNI_TRUE;
     g_app->xr_thread = std::thread{[options] {
         App& app = *g_app;
         JNIEnv* thread_env = nullptr;
@@ -92,8 +106,8 @@ JNIEXPORT void JNICALL Java_com_astrobotquest_vrhost_MainActivity_nativeStartXr(
         // This thread has little to do, but it has to do it every refresh: it must not wait
         // for the emulator's threads, which outnumber the processor cores.
         ::setpriority(PRIO_PROCESS, 0, -16);
-        RunXrHost(app.vm, app.activity, app.core, app.status, options, app.xr_status, app.quit,
-                  app.recenter_requests);
+        RunXrHost(app.vm, app.activity, app.core, app.pads, app.status, options, app.xr_status,
+                  app.quit, app.recenter_requests);
         LOGI("XR thread finished");
         if (!app.quit) {
             // The system ended the session (the user quit from its menu), or there never was
@@ -148,6 +162,30 @@ JNIEXPORT void JNICALL Java_com_astrobotquest_vrhost_MainActivity_nativeStop(JNI
     g_app.reset();
 }
 
+JNIEXPORT void JNICALL Java_com_astrobotquest_vrhost_MainActivity_nativeSetFieldOfView(
+    JNIEnv*, jobject, jint percent) {
+    if (g_app) {
+        g_app->xr_status.reduced_fov = percent < 100;
+    }
+}
+
+JNIEXPORT jfloatArray JNICALL Java_com_astrobotquest_vrhost_MainActivity_nativeHeadsetFov(
+    JNIEnv* env, jobject) {
+    if (!g_app) {
+        return nullptr;
+    }
+    std::scoped_lock lock{g_app->xr_status.optics_mutex};
+    const auto& fov = g_app->xr_status.headset_fov;
+    if (fov[0] <= 0.0f) {
+        return nullptr;
+    }
+    const jfloatArray result = env->NewFloatArray(4);
+    if (result != nullptr) {
+        env->SetFloatArrayRegion(result, 0, 4, fov.data());
+    }
+    return result;
+}
+
 JNIEXPORT jint JNICALL Java_com_astrobotquest_vrhost_MainActivity_nativeCoreState(JNIEnv*,
                                                                                   jobject) {
     return g_app ? static_cast<jint>(g_app->core.GetState()) : 0;
@@ -180,25 +218,28 @@ JNIEXPORT void JNICALL Java_com_astrobotquest_vrhost_MainActivity_nativeSetStatu
     ++g_app->status.version;
 }
 
+/// What the gamepad says: buttons in the PS4 pad's bit layout, sticks from -1 to 1 (to the
+/// right and towards the player), triggers from 0 to 1, and the finger on its own touchpad
+/// if it has one (0 to 1 from the pad's left and from its far edge).
 JNIEXPORT void JNICALL Java_com_astrobotquest_vrhost_MainActivity_nativeInput(
-    JNIEnv*, jobject, jint buttons, jint left_x, jint left_y, jint right_x, jint right_y,
-    jint left_trigger, jint right_trigger, jboolean touch_down, jint touch_x, jint touch_y) {
+    JNIEnv*, jobject, jint buttons, jfloat left_x, jfloat left_y, jfloat right_x, jfloat right_y,
+    jfloat left_trigger, jfloat right_trigger, jboolean touch_down, jfloat touch_x,
+    jfloat touch_y) {
     if (!g_app) {
         return;
     }
-    std::scoped_lock lock{g_app->pad_mutex};
-    PadState& pad = g_app->pad;
-    pad.buttons = static_cast<uint32_t>(buttons);
-    pad.left_x = static_cast<uint8_t>(left_x);
-    pad.left_y = static_cast<uint8_t>(left_y);
-    pad.right_x = static_cast<uint8_t>(right_x);
-    pad.right_y = static_cast<uint8_t>(right_y);
-    pad.left_trigger = static_cast<uint8_t>(left_trigger);
-    pad.right_trigger = static_cast<uint8_t>(right_trigger);
-    pad.touch_down = touch_down == JNI_TRUE;
-    pad.touch_x = static_cast<uint16_t>(touch_x);
-    pad.touch_y = static_cast<uint16_t>(touch_y);
-    g_app->core.SetPad(pad);
+    GamepadState state;
+    state.buttons = static_cast<uint32_t>(buttons);
+    state.left_x = left_x;
+    state.left_y = left_y;
+    state.right_x = right_x;
+    state.right_y = right_y;
+    state.left_trigger = left_trigger;
+    state.right_trigger = right_trigger;
+    state.touch_down = touch_down == JNI_TRUE;
+    state.touch_x = touch_x;
+    state.touch_y = touch_y;
+    g_app->pads.SetGamepad(state, PadRouter::Now());
 }
 
 /// Gyroscope in rad/s and accelerometer in m/s², in the controller's frame.
@@ -207,16 +248,71 @@ JNIEXPORT void JNICALL Java_com_astrobotquest_vrhost_MainActivity_nativeMotion(
     if (!g_app) {
         return;
     }
-    std::scoped_lock lock{g_app->pad_mutex};
-    PadState& pad = g_app->pad;
-    pad.has_motion = true;
-    pad.gyro[0] = gx;
-    pad.gyro[1] = gy;
-    pad.gyro[2] = gz;
-    pad.accel[0] = ax;
-    pad.accel[1] = ay;
-    pad.accel[2] = az;
-    g_app->core.SetPad(pad);
+    const float gyro[3]{gx, gy, gz};
+    const float accel[3]{ax, ay, az};
+    g_app->pads.SetGamepadMotion(gyro, accel, PadRouter::Now());
+}
+
+/// A gamepad is there to play with (again, or another one than before), or none is any more.
+/// `touchpad`: it has a touchpad of its own.
+JNIEXPORT void JNICALL Java_com_astrobotquest_vrhost_MainActivity_nativeSetGamepad(
+    JNIEnv*, jobject, jboolean connected, jboolean touchpad) {
+    if (g_app) {
+        g_app->pads.SetGamepadConnected(connected == JNI_TRUE, touchpad == JNI_TRUE,
+                                        PadRouter::Now());
+    }
+}
+
+/// How often OPTIONS was pressed in the game so far.
+JNIEXPORT jint JNICALL Java_com_astrobotquest_vrhost_MainActivity_nativeOptionsPresses(JNIEnv*,
+                                                                                       jobject) {
+    return g_app ? static_cast<jint>(g_app->pads.Look().options_presses) : 0;
+}
+
+/// Shows the panel over the game although the game has a picture (for what the player
+/// should read while they play), or no longer.
+JNIEXPORT void JNICALL Java_com_astrobotquest_vrhost_MainActivity_nativeShowPanel(JNIEnv*, jobject,
+                                                                                  jboolean show) {
+    if (g_app) {
+        g_app->xr_status.show_panel = show == JNI_TRUE;
+    }
+}
+
+/// The host's own menu is over (or not yet): what the player presses is the game's.
+JNIEXPORT void JNICALL Java_com_astrobotquest_vrhost_MainActivity_nativeSetPlaying(
+    JNIEnv*, jobject, jboolean playing) {
+    if (g_app) {
+        g_app->pads.SetPlaying(playing == JNI_TRUE, PadRouter::Now());
+    }
+}
+
+/// What the game is played with: 0 nothing, 1 the gamepad, 2 the headset's own controllers.
+/// 4 is added while those are in the player's hands, 8 where what the game is played with
+/// has no touchpad and buttons do its gestures.
+JNIEXPORT jint JNICALL Java_com_astrobotquest_vrhost_MainActivity_nativeController(JNIEnv*,
+                                                                                   jobject) {
+    if (!g_app) {
+        return 0;
+    }
+    const PadRouter::View view = g_app->pads.Look();
+    return static_cast<jint>(view.source) | (view.touch_present ? 4 : 0) |
+           (view.gesture_buttons ? 8 : 0);
+}
+
+/// The player chose with it in the host's menu: 1 the gamepad, 2 the headset's controllers.
+JNIEXPORT void JNICALL Java_com_astrobotquest_vrhost_MainActivity_nativeUseController(
+    JNIEnv*, jobject, jint which) {
+    if (g_app) {
+        g_app->pads.Use(which == 2 ? PadRouter::Source::Touch : PadRouter::Source::Gamepad,
+                        PadRouter::Now());
+    }
+}
+
+/// What the headset's own controllers say to the host's menu: 1 a stick held to the left, 2
+/// to the right, 4 what confirms (A or a trigger).
+JNIEXPORT jint JNICALL Java_com_astrobotquest_vrhost_MainActivity_nativeTouchMenu(JNIEnv*,
+                                                                                  jobject) {
+    return g_app ? static_cast<jint>(g_app->pads.TouchMenu()) : 0;
 }
 
 /// What the game asks of the controller: see CoreProcess::GetPadFeedback for the layout.
@@ -253,6 +349,7 @@ JNIEXPORT void JNICALL Java_com_astrobotquest_vrhost_MainActivity_nativeLog(JNIE
 }
 
 /// Bit 0: the headset session is running. Bit 1: the hands holding the controller are seen.
+/// Bit 2: the one of the headset's own controllers that is the controller in the game is.
 /// Bits 8 to 15: the display's refresh rate in Hz.
 JNIEXPORT jint JNICALL Java_com_astrobotquest_vrhost_MainActivity_nativeXrStatus(JNIEnv*,
                                                                                  jobject) {
@@ -262,7 +359,7 @@ JNIEXPORT jint JNICALL Java_com_astrobotquest_vrhost_MainActivity_nativeXrStatus
     const int refresh_rate =
         std::clamp(static_cast<int>(g_app->xr_status.refresh_rate.load() + 0.5f), 0, 255);
     return (g_app->xr_status.session_running ? 1 : 0) | (g_app->xr_status.hands_tracked ? 2 : 0) |
-           (refresh_rate << 8);
+           (g_app->xr_status.controller_tracked ? 4 : 0) | (refresh_rate << 8);
 }
 
 } // extern "C"

@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -98,6 +99,82 @@ static void ApplyScriptedLevel(const PortIn& port, s16* samples, int frames) {
         const float unit = static_cast<float>(state >> 8) / 8388608.0f - 1.0f;
         samples[i] = static_cast<s16>(unit * amplitude);
     }
+}
+
+/// SHADPS4_MIC_GAIN=<0.1..30>: what the microphone gives, that many times louder. A title
+/// that takes loudness for blowing takes none for it from a microphone that is too quiet.
+static void ApplyGain(const PortIn& port, s16* samples, int frames) {
+    static const float gain = [] {
+        const char* value = std::getenv("SHADPS4_MIC_GAIN");
+        const float wanted = value != nullptr ? static_cast<float>(std::atof(value)) : 1.0f;
+        return wanted > 0.0f ? std::clamp(wanted, 0.1f, 30.0f) : 1.0f;
+    }();
+    if (gain == 1.0f) {
+        return;
+    }
+    const u32 count = static_cast<u32>(frames) * port.channels_num;
+    for (u32 i = 0; i < count; ++i) {
+        samples[i] = static_cast<s16>(std::clamp(samples[i] * gain, -32768.0f, 32767.0f));
+    }
+}
+
+/// Says now and then how loud what a title was given is, when that is worth knowing: the first
+/// time, whenever something loud was heard, and once when there has been nothing but silence,
+/// which is what a microphone that may not be used gives (and one whose owner keeps quiet, if
+/// it cuts out what is not speech). (The loudness is all ASTRO BOT goes by: it
+/// takes -21 dB for blowing at half strength, -9 dB for blowing as hard as can be.)
+static void NoteLoudness(const PortIn& port, const s16* samples, int frames) {
+    using Clock = std::chrono::steady_clock;
+    static std::mutex mutex;
+    const std::scoped_lock lock{mutex};
+    static Clock::time_point since{};
+    static Clock::time_point started{};
+    static double loudest = 0.0;
+    static bool any_sound = false;
+    static bool first = true;
+    static bool silence_said = false;
+    const u32 count = static_cast<u32>(frames) * port.channels_num;
+    if (count == 0) {
+        return;
+    }
+    double squares = 0.0;
+    for (u32 i = 0; i < count; ++i) {
+        const double sample = samples[i] / 32768.0;
+        squares += sample * sample;
+        any_sound = any_sound || samples[i] != 0;
+    }
+    loudest = std::max(loudest, std::sqrt(squares / count));
+    const auto now = Clock::now();
+    if (since == Clock::time_point{}) {
+        since = now;
+        started = now;
+    }
+    if (now - since < std::chrono::seconds{10}) {
+        return;
+    }
+    // (Not for a microphone that has given nothing at all: that is what the line below is for.)
+    if ((first && any_sound) || Decibels(loudest) > -30.0) {
+        LOG_INFO(Lib_AudioIn,
+                 "Microphone: the loudest of the last 10 seconds was {:.0f} dB (the game takes "
+                 "-21 dB for blowing at half strength, -9 dB for blowing as hard as can be)",
+                 Decibels(loudest));
+        first = false;
+    }
+    if (!any_sound && !silence_said && now - started > std::chrono::seconds{30}) {
+        silence_said = true;
+#ifdef _WIN32
+        LOG_INFO(Lib_AudioIn,
+                 "Microphone: nothing but silence has come from it so far. If blowing does "
+                 "nothing in the game: is it the microphone Windows records from, may desktop "
+                 "apps use the microphone (Windows settings, Privacy & security, Microphone), "
+                 "and may the headset's streaming app use the headset's? The PS button and "
+                 "square held together blow without one (X and Y on a headset's controllers)");
+#else
+        LOG_INFO(Lib_AudioIn, "Microphone: nothing but silence has come from it so far");
+#endif
+    }
+    since = now;
+    loudest = 0.0;
 }
 
 static void NoteInput(int port_id, const PortIn& port, const s16* samples, int frames) {
@@ -316,7 +393,9 @@ int PS4_SYSV_ABI sceAudioInInput(s32 handle, void* dest) {
     std::scoped_lock lock{port->mutex};
     const int frames = port->impl->Read(dest);
     if (frames > 0) {
+        ApplyGain(*port, static_cast<s16*>(dest), frames);
         ApplyScriptedLevel(*port, static_cast<s16*>(dest), frames);
+        NoteLoudness(*port, static_cast<const s16*>(dest), frames);
         if (StatsEnabled()) {
             NoteInput(port_id, *port, static_cast<const s16*>(dest), frames);
         }

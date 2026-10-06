@@ -110,12 +110,19 @@ private:
 
     bool FilterDraw();
 
+    /// The passes a draw is made in: for each, the colour targets (a bit each) it leaves out.
+    /// One pass that leaves nothing out, unless two of the draw's targets are one surface.
+    boost::container::small_vector<u8, 4> SharedTargetPasses(u8 mrt_mask) const;
+
     void BindBuffers(const Shader::Info& stage, Shader::Backend::Bindings& binding,
                      Shader::PushData& push_data);
     void BindTextures(const Shader::Info& stage, Shader::Backend::Bindings& binding);
     bool BindResources(const Pipeline* pipeline);
     std::unique_ptr<VideoCore::Buffer> IsolateReadConstGuestBuffer(VAddr addr, u64 size);
     void RetireIsolatedReadConstSnapshots();
+
+    /// Set while a draw is made in more than one pass (SharedTargetPasses).
+    bool in_target_passes{};
 
     void ResetBindings() {
         for (auto& image_id : bound_images) {

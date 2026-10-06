@@ -2,6 +2,7 @@
 #pragma once
 
 #include <atomic>
+#include <array>
 #include <cstdint>
 #include <mutex>
 #include <vector>
@@ -9,6 +10,7 @@
 #include <jni.h>
 
 class CoreProcess;
+class PadRouter;
 
 /// A picture the Java side draws (text is far easier there) and the headset shows on a floating
 /// panel whenever the game itself has nothing on screen.
@@ -64,6 +66,17 @@ struct XrHostOptions {
     /// read the pose it drew it for; aiming at that moment leaves the compositor less to
     /// correct, which is what shows as black edges when the head turns.
     float predict_ms{25.0f};
+    /// Let the headset's own two controllers play the game where the player holds them
+    /// instead of a gamepad (see PadRouter for what does what).
+    bool own_controllers{true};
+    /// Which of the two is the controller in the game then: 1 the right one, 0 the left.
+    int pad_hand{1};
+    /// Let them shake when the game shakes the gamepad.
+    bool rumble{true};
+    /// For a gamepad without motion sensors, which the hands holding it turn and tilt in the
+    /// game: how far its front is taken to point above (or, negative, below) the way the
+    /// hands point, in degrees.
+    float pad_tilt{0.0f};
 };
 
 /// What a request to reset the view asks for (bits of the counter RunXrHost is given).
@@ -78,11 +91,22 @@ inline constexpr uint32_t Seat = 2;
 struct XrHostStatus {
     std::atomic<bool> session_running{};
     std::atomic<bool> hands_tracked{};
+    /// The one of the headset's own controllers that is the controller in the game is seen.
+    std::atomic<bool> controller_tracked{};
+    /// The panel is to be shown over the game: it has something to say to who is playing.
+    std::atomic<bool> show_panel{};
     std::atomic<float> refresh_rate{};
+    /// Set when the startup choice is confirmed, before the game can deliver any frames.
+    std::atomic<bool> reduced_fov{};
+    /// Full projection tangents reported by this headset: out, in, up, down.
+    /// The startup menu snapshots them before the emulator is launched.
+    std::mutex optics_mutex;
+    std::array<float, 4> headset_fov{};
 };
 
 /// Owns the OpenXR session: feeds the head pose to the core and shows the stereo frames it
-/// delivers. Blocks until `quit` is set or the system ends the session.
-void RunXrHost(JavaVM* vm, jobject activity, CoreProcess& core, StatusImage& status,
-               const XrHostOptions& options, XrHostStatus& host_status, std::atomic<bool>& quit,
-               std::atomic<uint32_t>& recenter_requests);
+/// delivers, reads the headset's own controllers for `pads` and places the controller the
+/// game is played with. Blocks until `quit` is set or the system ends the session.
+void RunXrHost(JavaVM* vm, jobject activity, CoreProcess& core, PadRouter& pads,
+               StatusImage& status, const XrHostOptions& options, XrHostStatus& host_status,
+               std::atomic<bool>& quit, std::atomic<uint32_t>& recenter_requests);

@@ -516,7 +516,8 @@ void VideoOutDriver::SubmitHmdFrameInternal(VideoOutPort* port, const HmdFrame& 
     u32 eye_width = 0;
     u32 eye_height = 0;
     const Vulkan::HmdFrames frames =
-        presenter->PrepareHmdFrame(hmd_frame.eye_textures, frame_id, eye_width, eye_height);
+        presenter->PrepareHmdFrame(hmd_frame.eye_textures, hmd_frame.fov, frame_id, eye_width,
+                                   eye_height);
     if (!frames) {
         // Same as regular flips: retry once the current graphics task yields.
         liverpool->EnqueueCommand([=, this] {

@@ -19,10 +19,12 @@ root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 ADB="$LOCALAPPDATA/Android/Sdk/platform-tools/adb.exe"
 export ANDROID_SERIAL=${ANDROID_SERIAL:-$(cat "$(dirname "${BASH_SOURCE[0]}")/quest-serial.local" 2>/dev/null)}
 export MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*'
-package=com.astrobotquest.vrhost
+# (ASTRO_PACKAGE: the build made by quest-host/build.sh --test-package, if that is the
+# one to run.)
+package=${ASTRO_PACKAGE:-com.astrobotquest.vrhost}
 level=${1:-3}
 
-"$ADB" shell "am instrument -w -e xrprobe $level $package/.SandboxShell" \
+"$ADB" shell "am instrument -w -e xrprobe $level $package/com.astrobotquest.vrhost.SandboxShell" \
   | sed -e 's/^INSTRUMENTATION_RESULT: stream=//' -e '/^INSTRUMENTATION_CODE/d'
 mkdir -p "$root/build/quest"
 "$ADB" exec-out "run-as $package cat files/xrprobe.log" > "$root/build/quest/xrprobe.log" 2>/dev/null

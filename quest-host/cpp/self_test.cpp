@@ -21,6 +21,7 @@
 
 #include "core_process.h"
 #include "gl_frames.h"
+#include "held_pad.h"
 #include "log.h"
 
 namespace Protocol = Core::Vr::Protocol;
@@ -287,8 +288,13 @@ std::string RunSelfTest(const CoreLaunch& launch, const std::string& out_dir, in
     note("frames are copied %s", blitter.WritesUnencoded() ? "as they are" : "through a decoder");
 
     Interrupter interrupter;
+    bool fov_mask = false;
     for (const auto& [name, value] : launch.extra_env) {
-        if (name == "HOST_INTERRUPTS") {
+        if (name == "HOST_FOV_MASK") {
+            // Exercise the session's optical-axis mask in the isolated test and its captures.
+            fov_mask = value == "1";
+            note("optical-axis FOV mask: %s", fov_mask ? "on" : "off");
+        } else if (name == "HOST_INTERRUPTS") {
             interrupter.Start(gl, std::atoi(value.c_str()), 1, 0.0f);
             note("taking the GPU away from the emulator %s times a second", value.c_str());
         } else if (name == "HOST_COMPOSITOR") {
@@ -346,6 +352,74 @@ std::string RunSelfTest(const CoreLaunch& launch, const std::string& out_dir, in
         }
         note("the head follows %zu looks", looks.size());
     }
+
+    // HOST_TURN="<second>:<steps>;...": the player asks to be turned round where they sit, so
+    // many steps to the right (to the left if negative), as a button held and the right stick
+    // flicked ask in a session.
+    struct Turn {
+        float at;
+        int steps;
+        bool done;
+    };
+    std::vector<Turn> turns;
+    for (const auto& [name, value] : launch.extra_env) {
+        if (name != "HOST_TURN") {
+            continue;
+        }
+        size_t at = 0;
+        while (at < value.size()) {
+            const size_t end = std::min(value.find(';', at), value.size());
+            Turn turn{};
+            if (std::sscanf(value.substr(at, end - at).c_str(), "%f:%d", &turn.at, &turn.steps) ==
+                2) {
+                turns.push_back(turn);
+            }
+            at = end + 1;
+        }
+        note("the view is turned %zu times", turns.size());
+    }
+
+    // HOST_PAD="<from second>:<kind>,<right>,<up>,<ahead>,<left>,<tilt>,<roll>;..." among the
+    // settings: what the host says of the controller from when on, the way a session does.
+    // Where it is in metres from the head (which this test keeps where it starts), how it is
+    // turned in degrees (to the left, its front up, its right side up). The kinds:
+    //   c  one of the headset's own controllers: it says everything of itself
+    //   h  hands seen around a gamepad without motion sensors: they say where it is and, as
+    //      far as hands can, how it is turned (HeldPad)
+    //   p  hands seen around a gamepad that has motion sensors: only where it is, and its
+    //      heading for the sensors to hold on to
+    //   n  nothing is seen of it
+    struct PadStep {
+        float from;
+        char kind;
+        float right, up, ahead;
+        float yaw, pitch, roll;
+    };
+    std::vector<PadStep> pad_steps;
+    float shot_interval = 10.0f;
+    for (const auto& [name, value] : launch.extra_env) {
+        if (name == "HOST_SHOTS") {
+            // A picture every so many seconds instead of every ten.
+            shot_interval = std::max(1.0f, std::strtof(value.c_str(), nullptr));
+        }
+        if (name != "HOST_PAD") {
+            continue;
+        }
+        size_t at = 0;
+        while (at < value.size()) {
+            const size_t end = std::min(value.find(';', at), value.size());
+            PadStep step{};
+            if (std::sscanf(value.substr(at, end - at).c_str(), "%f:%c,%f,%f,%f,%f,%f,%f",
+                            &step.from, &step.kind, &step.right, &step.up, &step.ahead, &step.yaw,
+                            &step.pitch, &step.roll) == 8) {
+                pad_steps.push_back(step);
+            }
+            at = end + 1;
+        }
+        note("the controller follows %zu steps", pad_steps.size());
+    }
+    const PadStep* pad_step = nullptr;
+    bool pad_seen = false;
 
     const auto start = Clock::now();
     const auto seconds_since_start = [&] {
@@ -411,6 +485,90 @@ std::string RunSelfTest(const CoreLaunch& launch, const std::string& out_dir, in
             note("view reset asked for with the head turned %.0f degrees", yaw * 57.29578f);
         }
 
+        for (Turn& turn : turns) {
+            if (turn.done || now < turn.at) {
+                continue;
+            }
+            turn.done = true;
+            for (int step = 0; step < std::abs(turn.steps); ++step) {
+                Protocol::PadPose message;
+                message.flags = turn.steps > 0 ? Protocol::PadPose::TurnRight
+                                               : Protocol::PadPose::TurnLeft;
+                core.SendPadPose(message);
+            }
+            note("%.0f s: the view is asked to turn %d steps to the right", now, turn.steps);
+        }
+
+        // The controller, as a session would report it.
+        for (const PadStep& step : pad_steps) {
+            if (now >= step.from && (pad_step == nullptr || step.from > pad_step->from)) {
+                pad_step = &step;
+                note("%.0f s: the controller is '%c', %.2f right, %.2f up, %.2f ahead, turned "
+                     "%.0f left, %.0f up, rolled %.0f",
+                     now, step.kind, step.right, step.up, step.ahead, step.yaw, step.pitch,
+                     step.roll);
+            }
+        }
+        if (pad_step != nullptr) {
+            const PadStep& step = *pad_step;
+            const float turn = step.yaw / 57.29578f;
+            const float tilt = step.pitch / 57.29578f;
+            const float roll = step.roll / 57.29578f;
+            const HeldPad::Vec right{std::cos(turn) * std::cos(roll), std::sin(roll),
+                                     -std::sin(turn) * std::cos(roll)};
+            const HeldPad::Vec level_front{-std::sin(turn), 0.0f, -std::cos(turn)};
+            const HeldPad::Vec level_up = HeldPad::Cross(right, level_front);
+            const HeldPad::Vec front{
+                level_front.x * std::cos(tilt) + level_up.x * std::sin(tilt),
+                level_front.y * std::cos(tilt) + level_up.y * std::sin(tilt),
+                level_front.z * std::cos(tilt) + level_up.z * std::sin(tilt)};
+            const HeldPad::Vec middle{step.right, step.up, -step.ahead};
+            Protocol::PadPose message;
+            const auto place = [&](const HeldPad::Vec& at) {
+                message.flags |= Protocol::PadPose::PositionValid;
+                message.position[0] = at.x;
+                message.position[1] = at.y;
+                message.position[2] = at.z;
+            };
+            const auto turned = [&](const HeldPad::Quat& q) {
+                message.flags |= Protocol::PadPose::OrientationValid;
+                message.orientation[0] = q.x;
+                message.orientation[1] = q.y;
+                message.orientation[2] = q.z;
+                message.orientation[3] = q.w;
+            };
+            if (step.kind == 'c') {
+                place(middle);
+                turned(HeldPad::FromAxes(right, HeldPad::Cross(right, front),
+                                         HeldPad::Scale(front, -1.0f)));
+            } else if (step.kind == 'h' || step.kind == 'p') {
+                // Two palms a gamepad's width apart, both hands pointing the way it does.
+                HeldPad::Hands hands;
+                hands.left_palm = HeldPad::Sub(middle, HeldPad::Scale(right, 0.1f));
+                hands.right_palm = HeldPad::Sub(middle, HeldPad::Scale(right, -0.1f));
+                hands.pointing_known = true;
+                hands.left_pointing = front;
+                hands.right_pointing = front;
+                if (const auto held = HeldPad::Locate(hands, 0.0f, 0.35f)) {
+                    place(held->position);
+                    if (held->turned_known) {
+                        message.yaw = held->yaw;
+                        message.flags |= Protocol::PadPose::YawValid;
+                        if (step.kind == 'h') {
+                            turned(held->orientation);
+                            message.flags |= Protocol::PadPose::HeldInHands;
+                        }
+                    }
+                }
+            }
+            // While it is seen, every time; once more when it no longer is.
+            const bool seen = message.flags != 0;
+            if (seen || pad_seen) {
+                core.SendPadPose(message);
+            }
+            pad_seen = seen;
+        }
+
         // Cross for a quarter of every five seconds gets a title past its menus.
         PadState pad;
         pad.buttons = std::fmod(now, 5.0f) < 0.25f && now > 20.0f ? 0x4000u : 0u;
@@ -439,7 +597,7 @@ std::string RunSelfTest(const CoreLaunch& launch, const std::string& out_dir, in
                 const auto begun = Clock::now();
                 glBindFramebuffer(GL_FRAMEBUFFER, display_framebuffer);
                 blitter.Draw(frames.Texture(frame->buffer), width, height,
-                             frame->swap_red_blue != 0, true);
+                             frame->swap_red_blue != 0, true, fov_mask, frame->fov);
                 const GLsync done = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
                 glClientWaitSync(done, GL_SYNC_FLUSH_COMMANDS_BIT, 2'000'000'000);
                 glDeleteSync(done);
@@ -452,7 +610,7 @@ std::string RunSelfTest(const CoreLaunch& launch, const std::string& out_dir, in
             if (frames.IsValid(frame->buffer) && now >= next_save_at && saved < 24) {
                 glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
                 blitter.Draw(frames.Texture(frame->buffer), width, height,
-                             frame->swap_red_blue != 0, false);
+                             frame->swap_red_blue != 0, false, fov_mask, frame->fov);
                 glReadPixels(0, 0, static_cast<GLsizei>(width), static_cast<GLsizei>(height),
                              GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
                 char name[64];
@@ -466,7 +624,7 @@ std::string RunSelfTest(const CoreLaunch& launch, const std::string& out_dir, in
                     WritePng(path, copy, width, height);
                 }};
                 ++saved;
-                next_save_at = now + 10.0f;
+                next_save_at = now + shot_interval;
             }
         }
         if (now - interval_start >= 10.0f) {

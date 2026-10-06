@@ -10,6 +10,7 @@
 #include <fmt/xchar.h>
 #include <hwinfo/hwinfo.h>
 
+#include "common/console_language.h"
 #include "common/debug.h"
 #include "common/logging/log.h"
 #include "common/thread.h"
@@ -283,6 +284,21 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
     // Switch to configured log
     Common::Log::Switch((!id.empty() && EmulatorSettings.IsLogSeparate()) ? id + ".log"
                                                                           : "shad_log.txt");
+    // SHADPS4_CONSOLE_LANGUAGE: the language the console is set to, which is the one a title
+    // speaks if it has it. As a language tag ("fr-FR", as Windows and Android name theirs) or
+    // as the console's own number. Whatever starts the emulator for a player says theirs here.
+    if (const char* wanted = std::getenv("SHADPS4_CONSOLE_LANGUAGE");
+        wanted != nullptr && wanted[0] != '\0') {
+        if (const auto language = Common::ConsoleLanguageFromTag(wanted)) {
+            EmulatorSettings.SetConsoleLanguage(*language);
+            LOG_INFO(Core, "The console's language: {} (asked for as \"{}\")",
+                     Common::ConsoleLanguageName(*language), wanted);
+        } else {
+            LOG_INFO(Core,
+                     "The console's language: {} (it has none for \"{}\", which was asked for)",
+                     Common::ConsoleLanguageName(EmulatorSettings.GetConsoleLanguage()), wanted);
+        }
+    }
 
     auto guest_eboot_path = "/app0/" + eboot_name.generic_string();
     const auto eboot_path = mnt->GetHostPath(guest_eboot_path);
@@ -370,12 +386,13 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
     }
     Core::KnownTitle::Prepare();
 #ifndef ENABLE_BACHATA_RUNTIME
-    // Reserve the guest's fixed virtual addresses before loading a PC OpenXR runtime.
-    // SteamVR may otherwise reserve low host addresses that PS4 titles expect to map
-    // (for example Astro Bot's heap at 0x300000000). Prepare must run first so the
-    // physical backing includes any memory needed by enlarged eye targets.
+    // The console's address space is set aside before anything of a headset is looked for.
+    // A title maps its memory at addresses of its own choosing (ASTRO BOT Rescue Mission its
+    // heap at 0x300000000), and what an OpenXR runtime brings into the process when it is
+    // loaded may come to lie right there if it is first: SteamVR's did, and the title stopped
+    // at its start with "Mapping cannot fit inside free region". (After Prepare, which says
+    // how much memory the title is to have.)
     memory = Core::Memory::Instance();
-    LOG_INFO(Kernel_Vmm, "Guest address space reserved before OpenXR runtime initialization");
 #endif
     Core::Vr::Runtime::Instance().Configure(psf_attributes.support_ps_vr.Value() != 0,
                                             psf_attributes.require_ps_vr.Value() != 0);

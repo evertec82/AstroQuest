@@ -26,9 +26,16 @@
 #include <openxr/openxr_platform.h>
 
 #include "core_process.h"
+#include "held_pad.h"
 #include "log.h"
+#include "pad_router.h"
 
 namespace Protocol = Core::Vr::Protocol;
+
+static_assert(PadRouter::RecenterPad == XrRecenter::Pad &&
+              PadRouter::RecenterSeat == XrRecenter::Seat);
+static_assert(static_cast<int>(PadRouter::Source::Gamepad) == 1 &&
+              static_cast<int>(PadRouter::Source::Touch) == 2);
 
 namespace {
 
@@ -97,11 +104,12 @@ struct Swapchain {
 
 class Host {
 public:
-    Host(JavaVM* vm_, jobject activity_, CoreProcess& core_, StatusImage& status_,
-         const XrHostOptions& options_, XrHostStatus& host_status_, std::atomic<bool>& quit_,
-         std::atomic<uint32_t>& recenter_requests_)
-        : vm{vm_}, activity{activity_}, core{core_}, status{status_}, options{options_},
-          host_status{host_status_}, quit{quit_}, recenter_requests{recenter_requests_} {}
+    Host(JavaVM* vm_, jobject activity_, CoreProcess& core_, PadRouter& pads_,
+         StatusImage& status_, const XrHostOptions& options_, XrHostStatus& host_status_,
+         std::atomic<bool>& quit_, std::atomic<uint32_t>& recenter_requests_)
+        : vm{vm_}, activity{activity_}, core{core_}, pads{pads_}, status{status_},
+          options{options_}, host_status{host_status_}, quit{quit_},
+          recenter_requests{recenter_requests_} {}
 
     void Run() {
         if (gl.Create() && InitOpenXr() && InitRendering()) {
@@ -248,6 +256,9 @@ private:
         if (has_hand_tracking) {
             CreateHandTrackers();
         }
+        if (options.own_controllers) {
+            CreateActions();
+        }
         if (has_metrics) {
             FindMetrics();
         }
@@ -344,6 +355,259 @@ private:
             }
         }
         LOGI("hand trackers created");
+    }
+
+    /// The headset's own controllers as the game's gamepad, for a player who holds them
+    /// instead of one (PadRouter says what does what). Where one of them is and how it points
+    /// (the right one, unless the settings say the left) is where the controller in the game
+    /// is.
+    void CreateActions() {
+        XrActionSetCreateInfo set_info{XR_TYPE_ACTION_SET_CREATE_INFO};
+        std::strcpy(set_info.actionSetName, "gamepad");
+        std::strcpy(set_info.localizedActionSetName, "Gamepad");
+        if (!Check(xrCreateActionSet(instance, &set_info, &action_set), "xrCreateActionSet")) {
+            action_set = XR_NULL_HANDLE;
+            return;
+        }
+        xrStringToPath(instance, "/user/hand/left", &hand_paths[0]);
+        xrStringToPath(instance, "/user/hand/right", &hand_paths[1]);
+        const auto make = [&](XrAction& action, const char* name, const char* shown,
+                              XrActionType type, bool per_hand = false) {
+            XrActionCreateInfo info{XR_TYPE_ACTION_CREATE_INFO};
+            std::strcpy(info.actionName, name);
+            std::strcpy(info.localizedActionName, shown);
+            info.actionType = type;
+            if (per_hand) {
+                info.countSubactionPaths = 2;
+                info.subactionPaths = hand_paths;
+            }
+            return XR_SUCCEEDED(xrCreateAction(action_set, &info, &action));
+        };
+        bool made = make(act_move, "left_stick", "Left stick", XR_ACTION_TYPE_VECTOR2F_INPUT);
+        made = made && make(act_finger, "touchpad_finger", "Finger on the touchpad",
+                            XR_ACTION_TYPE_VECTOR2F_INPUT);
+        made = made && make(act_left_in, "l3", "L3", XR_ACTION_TYPE_BOOLEAN_INPUT);
+        made = made && make(act_right_in, "touchpad_press", "Press the touchpad",
+                            XR_ACTION_TYPE_BOOLEAN_INPUT);
+        made = made && make(act_a, "cross", "Cross", XR_ACTION_TYPE_BOOLEAN_INPUT);
+        made = made && make(act_b, "square", "Square", XR_ACTION_TYPE_BOOLEAN_INPUT);
+        made = made && make(act_x, "circle", "Circle", XR_ACTION_TYPE_BOOLEAN_INPUT);
+        made = made && make(act_y, "triangle", "Triangle", XR_ACTION_TYPE_BOOLEAN_INPUT);
+        made = made && make(act_menu, "options", "Options", XR_ACTION_TYPE_BOOLEAN_INPUT);
+        made = made && make(act_left_grip, "l1", "L1", XR_ACTION_TYPE_FLOAT_INPUT);
+        made = made && make(act_right_grip, "r1", "R1", XR_ACTION_TYPE_FLOAT_INPUT);
+        made = made && make(act_left_trigger, "l2", "L2", XR_ACTION_TYPE_FLOAT_INPUT);
+        made = made && make(act_right_trigger, "r2", "R2", XR_ACTION_TYPE_FLOAT_INPUT);
+        made = made && make(act_pose, "controller", "Controller", XR_ACTION_TYPE_POSE_INPUT);
+        made = made &&
+               make(act_rumble, "rumble", "Rumble", XR_ACTION_TYPE_VIBRATION_OUTPUT, true);
+        if (!made) {
+            LOGW("the headset's own controllers could not be set up as a gamepad");
+            return;
+        }
+
+        std::vector<XrActionSuggestedBinding> bindings;
+        const auto bind = [&](XrAction action, const char* path) {
+            XrPath binding = XR_NULL_PATH;
+            if (XR_SUCCEEDED(xrStringToPath(instance, path, &binding))) {
+                bindings.push_back({action, binding});
+            }
+        };
+        bind(act_move, "/user/hand/left/input/thumbstick");
+        bind(act_finger, "/user/hand/right/input/thumbstick");
+        bind(act_left_in, "/user/hand/left/input/thumbstick/click");
+        bind(act_right_in, "/user/hand/right/input/thumbstick/click");
+        bind(act_a, "/user/hand/right/input/a/click");
+        bind(act_b, "/user/hand/right/input/b/click");
+        bind(act_x, "/user/hand/left/input/x/click");
+        bind(act_y, "/user/hand/left/input/y/click");
+        bind(act_menu, "/user/hand/left/input/menu/click");
+        bind(act_left_grip, "/user/hand/left/input/squeeze/value");
+        bind(act_right_grip, "/user/hand/right/input/squeeze/value");
+        bind(act_left_trigger, "/user/hand/left/input/trigger/value");
+        bind(act_right_trigger, "/user/hand/right/input/trigger/value");
+        bind(act_pose, options.pad_hand == 0 ? "/user/hand/left/input/aim/pose"
+                                             : "/user/hand/right/input/aim/pose");
+        bind(act_rumble, "/user/hand/left/output/haptic");
+        bind(act_rumble, "/user/hand/right/output/haptic");
+        // (The profile every controller of this make answers to, whatever its generation.)
+        XrInteractionProfileSuggestedBinding suggested{
+            XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
+        xrStringToPath(instance, "/interaction_profiles/oculus/touch_controller",
+                       &suggested.interactionProfile);
+        suggested.countSuggestedBindings = static_cast<uint32_t>(bindings.size());
+        suggested.suggestedBindings = bindings.data();
+        if (!Check(xrSuggestInteractionProfileBindings(instance, &suggested),
+                   "xrSuggestInteractionProfileBindings")) {
+            return;
+        }
+        XrSessionActionSetsAttachInfo attach{XR_TYPE_SESSION_ACTION_SETS_ATTACH_INFO};
+        attach.countActionSets = 1;
+        attach.actionSets = &action_set;
+        if (!Check(xrAttachSessionActionSets(session, &attach), "xrAttachSessionActionSets")) {
+            return;
+        }
+        XrActionSpaceCreateInfo space_info{XR_TYPE_ACTION_SPACE_CREATE_INFO};
+        space_info.action = act_pose;
+        space_info.poseInActionSpace.orientation.w = 1.0f;
+        if (!Check(xrCreateActionSpace(session, &space_info, &controller_space),
+                   "xrCreateActionSpace")) {
+            controller_space = XR_NULL_HANDLE;
+            return;
+        }
+        actions_ready = true;
+        LOGI("the headset's own controllers can play the game: %zu controls bound, the %s one "
+             "is the controller in the game",
+             bindings.size(), options.pad_hand == 0 ? "left" : "right");
+    }
+
+    /// What the headset's own controllers say right now. Nothing of it counts unless at
+    /// least one control is live: lying somewhere asleep, they say nothing at all.
+    void ReadControllers(TouchState& touch) {
+        XrActionStateGetInfo get{XR_TYPE_ACTION_STATE_GET_INFO};
+        bool any_active = false;
+        const auto pressed = [&](XrAction action) {
+            get.action = action;
+            XrActionStateBoolean state{XR_TYPE_ACTION_STATE_BOOLEAN};
+            if (XR_FAILED(xrGetActionStateBoolean(session, &get, &state)) ||
+                state.isActive != XR_TRUE) {
+                return false;
+            }
+            any_active = true;
+            return state.currentState == XR_TRUE;
+        };
+        const auto pulled = [&](XrAction action) {
+            get.action = action;
+            XrActionStateFloat state{XR_TYPE_ACTION_STATE_FLOAT};
+            if (XR_FAILED(xrGetActionStateFloat(session, &get, &state)) ||
+                state.isActive != XR_TRUE) {
+                return 0.0f;
+            }
+            any_active = true;
+            return std::clamp(state.currentState, 0.0f, 1.0f);
+        };
+        const auto stick = [&](XrAction action) {
+            get.action = action;
+            XrActionStateVector2f state{XR_TYPE_ACTION_STATE_VECTOR2F};
+            if (XR_FAILED(xrGetActionStateVector2f(session, &get, &state)) ||
+                state.isActive != XR_TRUE) {
+                return XrVector2f{};
+            }
+            any_active = true;
+            return state.currentState;
+        };
+        touch.a = pressed(act_a);
+        touch.b = pressed(act_b);
+        touch.x = pressed(act_x);
+        touch.y = pressed(act_y);
+        touch.menu = pressed(act_menu);
+        touch.left_stick_in = pressed(act_left_in);
+        touch.right_stick_in = pressed(act_right_in);
+        touch.left_grip = pulled(act_left_grip);
+        touch.right_grip = pulled(act_right_grip);
+        touch.left_trigger = pulled(act_left_trigger);
+        touch.right_trigger = pulled(act_right_trigger);
+        const XrVector2f move = stick(act_move);
+        const XrVector2f finger = stick(act_finger);
+        touch.left_x = move.x;
+        touch.left_y = move.y;
+        touch.right_x = finger.x;
+        touch.right_y = finger.y;
+        touch.present = any_active;
+    }
+
+    /// Reads the headset's own controllers for the router, which decides whether the game is
+    /// played with them, and finds the one that is the controller in the game if it is.
+    void UpdateControllers(XrTime time) {
+        TouchState touch;
+        if (actions_ready) {
+            const XrActiveActionSet active{action_set, XR_NULL_PATH};
+            XrActionsSyncInfo sync{XR_TYPE_ACTIONS_SYNC_INFO};
+            sync.countActiveActionSets = 1;
+            sync.activeActionSets = &active;
+            // (Anything but plain success: the game is not what the player has in front of
+            // them, and what they press is not meant for it.)
+            if (xrSyncActions(session, &sync) == XR_SUCCESS) {
+                ReadControllers(touch);
+            }
+        }
+        // (With or without controllers: this is also what keeps the router's time, for
+        // buttons that are held and for a stick that moves a finger over the touchpad.)
+        pads.SetTouch(touch, PadRouter::Now());
+        pad_view = pads.Look();
+
+        controllers_used = pad_view.source == PadRouter::Source::Touch;
+        if (controllers_used && !layout_logged) {
+            layout_logged = true;
+            LOGI("the headset's own controllers play the game: left stick to move, A = cross, "
+                 "B = square, X = circle, Y = triangle (X and Y together blow), right stick = "
+                 "finger on the touchpad, pressed in = touchpad pressed, grips = L1 and R1, "
+                 "triggers = L2 and R2, left menu button = OPTIONS (held for a second: view "
+                 "reset), both sticks pressed in = view reset; on the touchpad, the %s trigger "
+                 "presses, the %s grip swipes forward, the %s trigger pulls back and lets go",
+                 options.pad_hand == 0 ? "left" : "right", options.pad_hand == 0 ? "left" : "right",
+                 options.pad_hand == 0 ? "right" : "left");
+        }
+        controller_located = false;
+        if (controllers_used && touch.present) {
+            XrSpaceVelocity velocity{XR_TYPE_SPACE_VELOCITY};
+            XrSpaceLocation location{XR_TYPE_SPACE_LOCATION};
+            location.next = &velocity;
+            if (XR_SUCCEEDED(xrLocateSpace(controller_space, local_space, time, &location)) &&
+                (location.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT) != 0 &&
+                (location.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) != 0) {
+                controller_located = true;
+                controller_pose = location.pose;
+                controller_linear =
+                    (velocity.velocityFlags & XR_SPACE_VELOCITY_LINEAR_VALID_BIT) != 0
+                        ? velocity.linearVelocity
+                        : XrVector3f{};
+                controller_angular =
+                    (velocity.velocityFlags & XR_SPACE_VELOCITY_ANGULAR_VALID_BIT) != 0
+                        ? velocity.angularVelocity
+                        : XrVector3f{};
+            }
+        }
+        ApplyRumble(controllers_used && touch.present);
+    }
+
+    /// What the game asks of the gamepad's two motors, on the two controllers: the heavy
+    /// motor is in the gamepad's left grip, the light one in its right, and each is felt a
+    /// little in the other hand too.
+    void ApplyRumble(bool on) {
+        if (!actions_ready) {
+            return;
+        }
+        // (The small motor in the lowest byte, the large one above it.)
+        const uint32_t wanted =
+            on && options.rumble ? static_cast<uint32_t>(core.GetPadFeedback() & 0xffff) : 0;
+        const auto now = std::chrono::steady_clock::now();
+        // A vibration is asked for by its length: one that goes on is asked for again.
+        if (wanted == rumble_applied &&
+            (wanted == 0 || now - rumble_time < std::chrono::milliseconds{250})) {
+            return;
+        }
+        rumble_applied = wanted;
+        rumble_time = now;
+        const float light = static_cast<float>(wanted & 0xff) / 255.0f;
+        const float heavy = static_cast<float>((wanted >> 8) & 0xff) / 255.0f;
+        for (int hand = 0; hand < 2; ++hand) {
+            const float amplitude =
+                hand == 0 ? std::max(heavy, light * 0.4f) : std::max(light, heavy * 0.4f);
+            XrHapticActionInfo info{XR_TYPE_HAPTIC_ACTION_INFO};
+            info.action = act_rumble;
+            info.subactionPath = hand_paths[hand];
+            if (amplitude > 0.0f) {
+                XrHapticVibration vibration{XR_TYPE_HAPTIC_VIBRATION};
+                vibration.duration = 500'000'000;
+                vibration.frequency = XR_FREQUENCY_UNSPECIFIED;
+                vibration.amplitude = std::min(amplitude, 1.0f);
+                xrApplyHapticFeedback(session, &info,
+                                      reinterpret_cast<const XrHapticBaseHeader*>(&vibration));
+            } else {
+                xrStopHapticFeedback(session, &info);
+            }
+        }
     }
 
     bool CreateSwapchain(Swapchain& swapchain, uint32_t width, uint32_t height) {
@@ -850,7 +1114,7 @@ private:
         // Into the lower left corner when the picture is to be smaller than the image.
         glBindFramebuffer(GL_FRAMEBUFFER, game_swapchain.framebuffers[index]);
         blitter.Draw(frames.Texture(frame.buffer), layer_width, layer_height,
-                     frame.swap_red_blue != 0, decode_srgb);
+                     frame.swap_red_blue != 0, decode_srgb, host_status.reduced_fov, frame.fov);
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
         shown_width = layer_width;
         shown_height = layer_height;
@@ -904,6 +1168,9 @@ private:
                     probed = true;
                     ProbeIdleSession();
                 }
+                // (Nobody wears the headset, and nobody plays: but a button held on a
+                // gamepad still takes its time.)
+                pads.Tick(PadRouter::Now());
                 usleep(50'000);
                 continue;
             }
@@ -929,6 +1196,7 @@ private:
                 frame_state.predictedDisplayTime +
                 static_cast<XrTime>(std::clamp(options.predict_ms, 0.0f, 80.0f) * 1e6f);
             SendHeadPose(pose_time);
+            UpdateControllers(pose_time);
             SendPadPose(pose_time);
             UpdateLayerSize(frame_state.predictedDisplayTime);
 
@@ -972,7 +1240,8 @@ private:
                     layers.push_back(
                         reinterpret_cast<const XrCompositionLayerBaseHeader*>(&projection));
                 }
-                if ((stale || options.show_stats) && status_ready) {
+                const bool card = host_status.show_panel;
+                if ((stale || options.show_stats || card) && status_ready) {
                     quad.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
                     quad.space = view_space;
                     quad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
@@ -982,6 +1251,11 @@ private:
                     if (stale) {
                         quad.pose.position = {0.0f, 0.0f, -1.6f};
                         quad.size = {1.4f, 0.7f};
+                    } else if (card) {
+                        // To be read while playing: large enough for that, below the
+                        // middle of the view.
+                        quad.pose.position = {0.0f, -0.40f, -1.3f};
+                        quad.size = {0.9f, 0.45f};
                     } else {
                         // Over the game: out of the way of what is being played.
                         quad.pose.position = {0.0f, -0.55f, -1.6f};
@@ -1071,6 +1345,40 @@ private:
                  100.0f * static_cast<float>(pad_samples) / static_cast<float>(display_frames),
                  pad_from_head.x * held, pad_from_head.y * held, -pad_from_head.z * held);
         }
+        if (held_samples != 0) {
+            const HeldPad::Vec front = HeldPad::Rotate(held_orientation, {0.0f, 0.0f, -1.0f});
+            LOGI("gamepad: no motion sensors say how it is held, so the hands holding it do: "
+                 "%.0f%% of the time, now pointing %.0f degrees left and %.0f up",
+                 100.0f * static_cast<float>(held_samples) / static_cast<float>(display_frames),
+                 std::atan2(-front.x, -front.z) * Degrees,
+                 std::asin(std::clamp(front.y, -1.0f, 1.0f)) * Degrees);
+        }
+        if (compare_samples >= 50) {
+            // What tells how well the hands do as motion sensors: for a gamepad that has
+            // both, how far the two are apart and how much that wanders.
+            const double count = compare_samples;
+            const auto spread = [&](double sum, double squares) {
+                return std::sqrt(std::max(0.0, squares / count - (sum / count) * (sum / count)));
+            };
+            LOGI("hands against the gamepad's motion sensors: by the hands its front points "
+                 "%.0f degrees higher (give or take %.0f) and its right side is %.0f degrees "
+                 "higher (give or take %.0f) than by the sensors; %u samples",
+                 compare_pitch / count, spread(compare_pitch, compare_pitch_squares),
+                 compare_roll / count, spread(compare_roll, compare_roll_squares),
+                 compare_samples);
+        }
+        if (controllers_used) {
+            const float seen =
+                controller_samples != 0 ? 1.0f / static_cast<float>(controller_samples) : 0.0f;
+            LOGI("controllers: the headset's own play the game; the %s one, which is the "
+                 "controller in the game, was seen %.0f%% of the time, on average %.2f right, "
+                 "%.2f up, %.2f ahead of the head",
+                 options.pad_hand == 0 ? "left" : "right",
+                 100.0f * static_cast<float>(controller_samples) /
+                     static_cast<float>(display_frames),
+                 controller_from_head.x * seen, controller_from_head.y * seen,
+                 -controller_from_head.z * seen);
+        }
         ReportMetrics();
         reported_frames = frame_count;
         reported_cpu_seconds = usage.cpu_seconds;
@@ -1080,6 +1388,11 @@ private:
         palm_distance = 0.0f;
         pad_samples = 0;
         pad_from_head = {};
+        held_samples = 0;
+        compare_samples = 0;
+        compare_pitch = compare_pitch_squares = compare_roll = compare_roll_squares = 0.0;
+        controller_samples = 0;
+        controller_from_head = {};
         last_report = now;
     }
 
@@ -1122,7 +1435,8 @@ private:
             ++head_tracked_frames;
         }
 
-        // The distance between the eyes follows the headset's lens adjustment.
+        // The real headset supplies both the projection and the lens adjustment. Learn its
+        // full FOV while the startup menu is shown, before the title asks for its optics.
         XrViewLocateInfo locate{XR_TYPE_VIEW_LOCATE_INFO};
         locate.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
         locate.displayTime = display_time;
@@ -1131,12 +1445,35 @@ private:
         XrView eye_views[2]{{XR_TYPE_VIEW}, {XR_TYPE_VIEW}};
         uint32_t view_count = 0;
         if (XR_SUCCEEDED(xrLocateViews(session, &locate, &view_state, 2, &view_count, eye_views)) &&
-            view_count == 2 &&
-            (view_state.viewStateFlags & XR_VIEW_STATE_POSITION_VALID_BIT) != 0) {
+            view_count == 2) {
+            // The emulated headset has mirrored optics. Enclose both eyes' runtime frusta
+            // so 100% never clips either eye if the reported projections differ slightly.
+            const std::array<float, 4> fov{
+                std::max(-std::tan(eye_views[0].fov.angleLeft),
+                         std::tan(eye_views[1].fov.angleRight)),
+                std::max(std::tan(eye_views[0].fov.angleRight),
+                         -std::tan(eye_views[1].fov.angleLeft)),
+                std::max(std::tan(eye_views[0].fov.angleUp),
+                         std::tan(eye_views[1].fov.angleUp)),
+                std::max(-std::tan(eye_views[0].fov.angleDown),
+                         -std::tan(eye_views[1].fov.angleDown)),
+            };
+            if (std::all_of(fov.begin(), fov.end(), [](float value) {
+                    return std::isfinite(value) && value > 0.1f && value < 10.0f;
+                })) {
+                std::scoped_lock lock{host_status.optics_mutex};
+                host_status.headset_fov = fov;
+            }
+            if ((view_state.viewStateFlags & XR_VIEW_STATE_POSITION_VALID_BIT) == 0) {
+                return;
+            }
             const float dx = eye_views[1].pose.position.x - eye_views[0].pose.position.x;
             const float dy = eye_views[1].pose.position.y - eye_views[0].pose.position.y;
             const float dz = eye_views[1].pose.position.z - eye_views[0].pose.position.z;
             const float measured = std::sqrt(dx * dx + dy * dy + dz * dz);
+            if (!std::isfinite(measured) || measured < 0.04f || measured > 0.09f) {
+                return;
+            }
             if (std::abs(measured - ipd) > 0.0002f || ++frames_since_optics > 300) {
                 ipd = measured;
                 frames_since_optics = 0;
@@ -1145,8 +1482,15 @@ private:
         }
     }
 
+    struct Palm {
+        XrVector3f position;
+        /// The way the hand points, from the wrist to the knuckles: if the headset says.
+        bool pointing_known;
+        XrVector3f pointing;
+    };
+
     /// Where the palm of a hand is, if the headset sees it.
-    std::optional<XrVector3f> LocatePalm(int hand, XrTime time) {
+    std::optional<Palm> LocatePalm(int hand, XrTime time) {
         XrHandJointLocationEXT joints[XR_HAND_JOINT_COUNT_EXT];
         XrHandJointLocationsEXT locations{XR_TYPE_HAND_JOINT_LOCATIONS_EXT};
         locations.jointCount = XR_HAND_JOINT_COUNT_EXT;
@@ -1162,14 +1506,47 @@ private:
         if ((palm.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) == 0) {
             return std::nullopt;
         }
-        return palm.pose.position;
+        Palm result{palm.pose.position, false, {}};
+        if ((palm.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT) != 0) {
+            // (A palm's -Z runs along the bone of its middle finger, towards the fingers.)
+            result.pointing_known = true;
+            result.pointing = Rotate(palm.pose.orientation, {0.0f, 0.0f, -1.0f});
+        }
+        return result;
     }
 
-    /// A gamepad cannot be tracked, the hands that hold it can: both palms a controller's width
-    /// apart give away where it is and which way it points.
+    /// For a gamepad that has motion sensors and is held in hands the headset sees: how far
+    /// what the hands say of its attitude is from what its own sensors say, while it is held
+    /// still enough for those to know which way is up. Only counted, for the log.
+    void CompareWithSensors(const HeldPad::Pose& held) {
+        const float* accel = pad_view.gamepad_accel;
+        const float gravity = std::hypot(accel[0], accel[1], accel[2]);
+        if (!held.pitch_measured || !(gravity > 0.8f * 9.81f && gravity < 1.2f * 9.81f)) {
+            return;
+        }
+        // What is up, seen from the gamepad (+X its right, +Y out of its face, +Z towards
+        // the player), tells how far its front and its right side are above level.
+        const HeldPad::Vec front = HeldPad::Rotate(held.orientation, {0.0f, 0.0f, -1.0f});
+        const HeldPad::Vec right = HeldPad::Rotate(held.orientation, {1.0f, 0.0f, 0.0f});
+        const auto angle = [](float sine) {
+            return std::asin(std::clamp(sine, -1.0f, 1.0f)) * Degrees;
+        };
+        const double pitch = angle(front.y) - angle(-accel[2] / gravity);
+        const double roll = angle(right.y) - angle(accel[0] / gravity);
+        ++compare_samples;
+        compare_pitch += pitch;
+        compare_pitch_squares += pitch * pitch;
+        compare_roll += roll;
+        compare_roll_squares += roll * roll;
+    }
+
+    /// Says where the controller the game is played with is. One of the headset's own says
+    /// that of itself. A gamepad cannot be tracked, but the hands that hold it can: both
+    /// palms a controller's width apart give away where it is and which way it points, and
+    /// for a gamepad without motion sensors also how it is tilted (see HeldPad).
     void SendPadPose(XrTime display_time) {
         Protocol::PadPose message;
-        const uint32_t requests = recenter_requests.exchange(0);
+        const uint32_t requests = recenter_requests.exchange(0) | pads.TakeRecenter();
         if ((requests & XrRecenter::Pad) != 0) {
             message.flags |= Protocol::PadPose::RecenterYaw;
         }
@@ -1183,37 +1560,76 @@ private:
             message.flags |= Protocol::PadPose::RecenterSeat;
             LOGI("view reset: %s", system_reset ? "the headset's own" : "asked for by the player");
         }
+        // The steps the player wants to be turned round by where they sit (a button held
+        // and the right stick flicked, see PadRouter): one a message.
+        turns_asked += pads.TakeTurn();
+        if (turns_asked > 0) {
+            --turns_asked;
+            message.flags |= Protocol::PadPose::TurnRight;
+        } else if (turns_asked < 0) {
+            ++turns_asked;
+            message.flags |= Protocol::PadPose::TurnLeft;
+        }
+
+        // For the log: a place as seen from the head.
+        const auto from_head = [&](const XrVector3f& place) {
+            const XrQuaternionf to_head{-head_pose.orientation.x, -head_pose.orientation.y,
+                                        -head_pose.orientation.z, head_pose.orientation.w};
+            return Rotate(to_head, {place.x - head_pose.position.x, place.y - head_pose.position.y,
+                                    place.z - head_pose.position.z});
+        };
 
         bool seen = false;
-        if (has_hand_tracking) {
+        bool hands_seen = false;
+        if (controllers_used) {
+            // (Hands that hold the headset's own controllers hold no gamepad.)
+            if (controller_located) {
+                message.flags |=
+                    Protocol::PadPose::PositionValid | Protocol::PadPose::OrientationValid;
+                message.position[0] = controller_pose.position.x;
+                message.position[1] = controller_pose.position.y;
+                message.position[2] = controller_pose.position.z;
+                message.orientation[0] = controller_pose.orientation.x;
+                message.orientation[1] = controller_pose.orientation.y;
+                message.orientation[2] = controller_pose.orientation.z;
+                message.orientation[3] = controller_pose.orientation.w;
+                message.linear_velocity[0] = controller_linear.x;
+                message.linear_velocity[1] = controller_linear.y;
+                message.linear_velocity[2] = controller_linear.z;
+                message.angular_velocity[0] = controller_angular.x;
+                message.angular_velocity[1] = controller_angular.y;
+                message.angular_velocity[2] = controller_angular.z;
+                const XrVector3f offset = from_head(controller_pose.position);
+                controller_from_head.x += offset.x;
+                controller_from_head.y += offset.y;
+                controller_from_head.z += offset.z;
+                ++controller_samples;
+                seen = true;
+            }
+        } else if (has_hand_tracking) {
             const auto left = LocatePalm(0, display_time);
             const auto right = LocatePalm(1, display_time);
             if (left && right) {
-                const XrVector3f across{right->x - left->x, right->y - left->y,
-                                        right->z - left->z};
-                const float distance =
-                    std::sqrt(across.x * across.x + across.y * across.y + across.z * across.z);
+                HeldPad::Hands hands;
+                hands.left_palm = {left->position.x, left->position.y, left->position.z};
+                hands.right_palm = {right->position.x, right->position.y, right->position.z};
+                hands.pointing_known = left->pointing_known && right->pointing_known;
+                hands.left_pointing = {left->pointing.x, left->pointing.y, left->pointing.z};
+                hands.right_pointing = {right->pointing.x, right->pointing.y, right->pointing.z};
                 ++palm_samples;
-                palm_distance += distance;
-                // Hands further apart, or closer together, are not holding a controller.
-                if (distance > 0.05f && distance < 0.32f) {
-                    XrVector3f centre{(left->x + right->x) * 0.5f, (left->y + right->y) * 0.5f,
-                                      (left->z + right->z) * 0.5f};
-                    const float level = std::sqrt(across.x * across.x + across.z * across.z);
-                    if (level > 0.6f * distance) {
-                        // The line from the left to the right palm is the controller's
-                        // sideways axis; its heading follows from that.
-                        const float yaw = std::atan2(-across.z, across.x);
-                        message.yaw = yaw;
+                palm_distance += HeldPad::Length(HeldPad::Sub(hands.right_palm, hands.left_palm));
+                // Hands further apart than a controller is wide, or closer together, are not
+                // holding one.
+                if (const auto held =
+                        HeldPad::Locate(hands, options.pad_tilt / Degrees, held_pitch)) {
+                    const XrVector3f centre{held->position.x, held->position.y,
+                                            held->position.z};
+                    if (held->turned_known) {
+                        message.yaw = held->yaw;
                         message.flags |= Protocol::PadPose::YawValid;
-                        // The palms close around the grips, which sit behind and below the
-                        // middle of the controller.
-                        centre.x += -std::sin(yaw) * 0.035f;
-                        centre.z += -std::cos(yaw) * 0.035f;
                     }
-                    centre.y += 0.015f;
 
-                    if (pad_seen && display_time > pad_time) {
+                    if (hands_held && display_time > pad_time) {
                         const float elapsed =
                             static_cast<float>(display_time - pad_time) * 1e-9f;
                         if (elapsed < 0.1f) {
@@ -1231,13 +1647,7 @@ private:
                     pad_position = centre;
                     pad_time = display_time;
 
-                    // For the log: the same, as seen from the head.
-                    const XrQuaternionf to_head{-head_pose.orientation.x, -head_pose.orientation.y,
-                                                -head_pose.orientation.z, head_pose.orientation.w};
-                    const XrVector3f offset =
-                        Rotate(to_head, {centre.x - head_pose.position.x,
-                                         centre.y - head_pose.position.y,
-                                         centre.z - head_pose.position.z});
+                    const XrVector3f offset = from_head(centre);
                     pad_from_head.x += offset.x;
                     pad_from_head.y += offset.y;
                     pad_from_head.z += offset.z;
@@ -1250,18 +1660,53 @@ private:
                     message.linear_velocity[0] = pad_velocity.x;
                     message.linear_velocity[1] = pad_velocity.y;
                     message.linear_velocity[2] = pad_velocity.z;
+
+                    if (held->turned_known) {
+                        if (held->pitch_measured) {
+                            held_pitch = held->pitch;
+                        }
+                        // Hands tremble, and what is seen of them more so: what is passed
+                        // on follows them a little behind. After a gap it starts afresh.
+                        const float elapsed =
+                            held_shown && display_time > held_time
+                                ? static_cast<float>(display_time - held_time) * 1e-9f
+                                : 1.0f;
+                        held_orientation =
+                            elapsed < 0.25f
+                                ? HeldPad::Towards(held_orientation, held->orientation,
+                                                   1.0f - std::exp(-elapsed / HeldFollowTime))
+                                : held->orientation;
+                        held_shown = true;
+                        held_time = display_time;
+                        if (!pad_view.gamepad_motion) {
+                            // No motion sensors say how the gamepad is held (it has none,
+                            // or there is no gamepad at all yet): the hands do.
+                            message.flags |= Protocol::PadPose::OrientationValid |
+                                             Protocol::PadPose::HeldInHands;
+                            message.orientation[0] = held_orientation.x;
+                            message.orientation[1] = held_orientation.y;
+                            message.orientation[2] = held_orientation.z;
+                            message.orientation[3] = held_orientation.w;
+                            ++held_samples;
+                        } else {
+                            CompareWithSensors(*held);
+                        }
+                    }
                     seen = true;
+                    hands_seen = true;
                 }
             }
         }
 
-        // While the hands are seen, every frame; once more when they are lost, so that the
+        // While the controller is seen, every frame; once more when it is lost, so that the
         // emulator stops trusting the last position.
         if (seen || pad_seen || message.flags != 0) {
             core.SendPadPose(message);
         }
         pad_seen = seen;
-        host_status.hands_tracked = seen;
+        hands_held = hands_seen;
+        host_status.hands_tracked = hands_seen;
+        host_status.controller_tracked = controllers_used && seen;
     }
 
     /// Describes the shown frame to the compositor: where the head was when the emulator drew
@@ -1328,6 +1773,13 @@ private:
                 xrDestroySwapchain(swapchain->handle);
             }
         }
+        if (controller_space != XR_NULL_HANDLE) {
+            xrDestroySpace(controller_space);
+        }
+        if (action_set != XR_NULL_HANDLE) {
+            // (Its actions go with it.)
+            xrDestroyActionSet(action_set);
+        }
         if (local_space != XR_NULL_HANDLE) {
             xrDestroySpace(local_space);
         }
@@ -1346,6 +1798,7 @@ private:
     JavaVM* vm;
     jobject activity;
     CoreProcess& core;
+    PadRouter& pads;
     StatusImage& status;
     XrHostOptions options;
     XrHostStatus& host_status;
@@ -1384,10 +1837,57 @@ private:
     /// When the headset's system redefines the space poses are given in (its "reset view"),
     /// or 0.
     XrTime space_change_time{};
+    int turns_asked{};
     bool pad_seen{};
+    /// The hands were seen holding a gamepad in the frame before.
+    bool hands_held{};
     XrVector3f pad_position{};
     XrVector3f pad_velocity{};
     XrTime pad_time{};
+
+    static constexpr float Degrees = 57.29578f;
+
+    // The headset's own controllers, which play the game where the player holds them
+    // instead of a gamepad.
+    XrActionSet action_set{XR_NULL_HANDLE};
+    XrAction act_move{XR_NULL_HANDLE};
+    XrAction act_finger{XR_NULL_HANDLE};
+    XrAction act_left_in{XR_NULL_HANDLE};
+    XrAction act_right_in{XR_NULL_HANDLE};
+    XrAction act_a{XR_NULL_HANDLE};
+    XrAction act_b{XR_NULL_HANDLE};
+    XrAction act_x{XR_NULL_HANDLE};
+    XrAction act_y{XR_NULL_HANDLE};
+    XrAction act_menu{XR_NULL_HANDLE};
+    XrAction act_left_grip{XR_NULL_HANDLE};
+    XrAction act_right_grip{XR_NULL_HANDLE};
+    XrAction act_left_trigger{XR_NULL_HANDLE};
+    XrAction act_right_trigger{XR_NULL_HANDLE};
+    XrAction act_pose{XR_NULL_HANDLE};
+    XrAction act_rumble{XR_NULL_HANDLE};
+    XrPath hand_paths[2]{XR_NULL_PATH, XR_NULL_PATH};
+    XrSpace controller_space{XR_NULL_HANDLE};
+    bool actions_ready{};
+    /// What the game is played with, as of this frame.
+    PadRouter::View pad_view;
+    bool controllers_used{};
+    bool layout_logged{};
+    bool controller_located{};
+    XrPosef controller_pose{{0.0f, 0.0f, 0.0f, 1.0f}, {}};
+    XrVector3f controller_linear{};
+    XrVector3f controller_angular{};
+    uint32_t rumble_applied{};
+    std::chrono::steady_clock::time_point rumble_time{};
+
+    // A gamepad as the hands holding it turn and tilt it.
+    /// How quickly what is passed on follows what the hands say, in seconds.
+    static constexpr float HeldFollowTime = 0.06f;
+    HeldPad::Quat held_orientation;
+    bool held_shown{};
+    XrTime held_time{};
+    /// How far up the hands pointed when the headset could last tell: about how a gamepad
+    /// is held, before it ever could.
+    float held_pitch{0.35f};
 
     struct Metric {
         XrPath path;
@@ -1432,6 +1932,14 @@ private:
     float palm_distance{};
     uint32_t pad_samples{};
     XrVector3f pad_from_head{};
+    uint32_t held_samples{};
+    uint32_t compare_samples{};
+    double compare_pitch{};
+    double compare_pitch_squares{};
+    double compare_roll{};
+    double compare_roll_squares{};
+    uint32_t controller_samples{};
+    XrVector3f controller_from_head{};
     uint64_t status_version{};
     bool status_ready{};
     float ipd{0.063f};
@@ -1440,9 +1948,9 @@ private:
 
 } // namespace
 
-void RunXrHost(JavaVM* vm, jobject activity, CoreProcess& core, StatusImage& status,
-               const XrHostOptions& options, XrHostStatus& host_status, std::atomic<bool>& quit,
-               std::atomic<uint32_t>& recenter_requests) {
-    Host host{vm, activity, core, status, options, host_status, quit, recenter_requests};
+void RunXrHost(JavaVM* vm, jobject activity, CoreProcess& core, PadRouter& pads,
+               StatusImage& status, const XrHostOptions& options, XrHostStatus& host_status,
+               std::atomic<bool>& quit, std::atomic<uint32_t>& recenter_requests) {
+    Host host{vm, activity, core, pads, status, options, host_status, quit, recenter_requests};
     host.Run();
 }

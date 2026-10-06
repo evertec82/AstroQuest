@@ -475,6 +475,10 @@ void EmitContext::DefineInputs() {
         break;
     case LogicalStage::Geometry: {
         primitive_id = DefineVariable(U32[1], spv::BuiltIn::PrimitiveId, spv::StorageClass::Input);
+        if (info.loads.GetAny(IR::Attribute::InvocationId)) {
+            invocation_id =
+                DefineVariable(U32[1], spv::BuiltIn::InvocationId, spv::StorageClass::Input);
+        }
         const auto gl_per_vertex =
             Name(TypeStruct(F32[4], F32[1], TypeArray(F32[1], ConstU32(1u))), "gl_PerVertex");
         MemberName(gl_per_vertex, 0, "gl_Position");

@@ -2,6 +2,7 @@
 # Runs the Windows dev build of the core against the extracted game for a fixed time and keeps
 # the log, so HLE changes can be checked without a headset.
 #   tools/run-win.sh [seconds] [extra shadps4 args...]
+# SHADPS4_GAME=<folder> runs another copy of the game than games/CUSA12392.
 set -u
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 seconds=${1:-40}
@@ -20,6 +21,7 @@ fi
 cd "$root/build/win-x64" || exit 1
 mkdir -p user
 export SHADPS4_VR_DEMO=${SHADPS4_VR_DEMO:-1}
-timeout "$seconds" ./shadps4.exe -g "$(cygpath -w "$root/games/CUSA12392/eboot.bin")" "$@" > run-stdout.log 2>&1
+game=${SHADPS4_GAME:-$root/games/CUSA12392}
+timeout "$seconds" ./shadps4.exe -g "$(cygpath -w "$game/eboot.bin")" "$@" > run-stdout.log 2>&1
 echo "exit=$?" >> run-stdout.log
 wc -l run-stdout.log

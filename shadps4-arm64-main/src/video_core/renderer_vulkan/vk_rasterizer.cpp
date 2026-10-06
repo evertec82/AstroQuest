@@ -270,6 +270,20 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
     }
     const auto& regs = liverpool->regs;
     const GraphicsPipeline* pipeline = pipeline_cache.GetGraphicsPipeline();
+    if (pipeline != nullptr && !in_target_passes) {
+        if (const auto passes = SharedTargetPasses(pipeline->GetGraphicsKey().mrt_mask);
+            passes.size() > 1) {
+            // One surface as two of the draw's targets: a pass for each.
+            in_target_passes = true;
+            for (const u8 left_out : passes) {
+                pipeline_cache.LeaveTargetsOut(left_out);
+                Draw(is_indexed, index_offset);
+            }
+            pipeline_cache.LeaveTargetsOut(0);
+            in_target_passes = false;
+            return;
+        }
+    }
     // SHADPS4_DBG_SKIP_PS=<hash>[,<hash>...]: draws whose pixel shader is one of these are left
     // out, to see in the picture what they draw.
     static const std::vector<u64> skip_ps = [] {
@@ -379,6 +393,87 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
 
     ResetBindings();
     RetireIsolatedReadConstSnapshots();
+}
+
+boost::container::small_vector<u8, 4> Rasterizer::SharedTargetPasses(u8 mrt_mask) const {
+    // A title may bind one surface as two colour targets and write some channels through the
+    // one, the others through the other: that way each can have blending of its own. (Astro
+    // Bot draws the rings on its lava like that, colour blended in through target 0 and
+    // alpha written through target 1; both are the same quarter-size buffer.) The console's
+    // GPU writes both to the one memory. Vulkan leaves undefined what an image holds that
+    // was two attachments of one render pass, and on the desktop GPU this was found on it
+    // held the draw in some blocks of 4x8 texels and not in others: squares in the lava's
+    // glow around the octopus of world 2. Such a draw is made once for every target that
+    // shares a surface, with the others left out: what each pass writes is what the one
+    // draw would have.
+    const auto& regs = liverpool->regs;
+    boost::container::small_vector<u8, 4> passes;
+    passes.push_back(0);
+    if (regs.color_control.mode == AmdGpu::ColorControl::OperationMode::Disable) {
+        return passes;
+    }
+    u8 used = 0;
+    for (u32 cb = 0; cb < AmdGpu::NUM_COLOR_BUFFERS; ++cb) {
+        if ((mrt_mask & (1u << cb)) != 0 && regs.color_buffers[cb] &&
+            regs.color_target_mask.GetMask(cb) != 0) {
+            used |= 1u << cb;
+        }
+    }
+    const auto same_surface = [&](u32 a, u32 b) {
+        const auto& first = regs.color_buffers[a];
+        const auto& second = regs.color_buffers[b];
+        return first.Address() == second.Address() &&
+               first.view.slice_start == second.view.slice_start;
+    };
+    // Every target goes into the first pass that has no target of the same surface yet.
+    boost::container::small_vector<u8, 4> drawn;
+    for (u32 cb = 0; cb < AmdGpu::NUM_COLOR_BUFFERS; ++cb) {
+        if ((used & (1u << cb)) == 0) {
+            continue;
+        }
+        u32 pass = 0;
+        for (; pass < drawn.size(); ++pass) {
+            bool shared = false;
+            for (u32 other = 0; other < cb; ++other) {
+                shared |= (drawn[pass] & (1u << other)) != 0 && same_surface(cb, other);
+            }
+            if (!shared) {
+                break;
+            }
+        }
+        if (pass == drawn.size()) {
+            drawn.push_back(0);
+        }
+        drawn[pass] |= 1u << cb;
+    }
+    if (drawn.size() <= 1) {
+        return passes;
+    }
+    // What a draw does to depth and stencil it would do once for every pass. That is the same
+    // only where a second pass passes the depth test where the first did and writes the same
+    // depth again, and where nothing counts in the stencil.
+    const auto& depth = regs.depth_control;
+    const bool writes_depth = depth.depth_enable && depth.depth_write_enable;
+    const bool repeatable = depth.depth_func == AmdGpu::CompareFunc::LessEqual ||
+                            depth.depth_func == AmdGpu::CompareFunc::GreaterEqual ||
+                            depth.depth_func == AmdGpu::CompareFunc::Equal ||
+                            depth.depth_func == AmdGpu::CompareFunc::Always;
+    if (depth.stencil_enable || (writes_depth && !repeatable)) {
+        static bool told = false;
+        if (!std::exchange(told, true)) {
+            LOG_WARNING(Render_Vulkan,
+                        "A draw has one surface ({:#x}) as more than one colour target and "
+                        "writes depth or stencil in a way that cannot be done twice: it is "
+                        "drawn in one pass, and the picture may have squares where it draws",
+                        regs.color_buffers[std::countr_zero(used)].Address());
+        }
+        return passes;
+    }
+    passes.clear();
+    for (const u8 targets : drawn) {
+        passes.push_back(used & ~targets);
+    }
+    return passes;
 }
 
 void Rasterizer::DrawIndirect(bool is_indexed, VAddr arg_address, u32 offset, u32 stride,
@@ -1493,10 +1588,20 @@ void Rasterizer::UpdateViewportScissorState() const {
     }
 
     const auto& vp_ctl = regs.viewport_control;
+    u32 viewport_count = 1;
     for (u32 i = 0; i < AmdGpu::NUM_VIEWPORTS; i++) {
+        if (regs.viewports[i].xscale != 0.f) {
+            viewport_count = i + 1;
+        }
+    }
+    for (u32 i = 0; i < viewport_count; i++) {
         const auto& vp = regs.viewports[i];
         const auto& vp_d = regs.viewport_depths[i];
         if (vp.xscale == 0) {
+            // ViewportIndex refers to the register slot, not to a compacted list of active
+            // viewports. Keep disabled slots so subsequent eyes retain their indices.
+            viewports.push_back({.width = 1.f, .height = 1.f, .maxDepth = 1.f});
+            scissors.push_back({.offset = {0, 0}, .extent = {0, 0}});
             continue;
         }
 
@@ -1562,24 +1667,6 @@ void Rasterizer::UpdateViewportScissorState() const {
         });
     }
 
-    if (viewports.empty()) {
-        // Vulkan requires providing at least one viewport.
-        constexpr vk::Viewport empty_viewport = {
-            .x = -1.0f,
-            .y = -1.0f,
-            .width = 1.0f,
-            .height = 1.0f,
-            .minDepth = 0.0f,
-            .maxDepth = 1.0f,
-        };
-        constexpr vk::Rect2D empty_scissor = {
-            .offset = {0, 0},
-            .extent = {1, 1},
-        };
-        viewports.push_back(empty_viewport);
-        scissors.push_back(empty_scissor);
-    }
-
     // A measuring aid, not a setting: SHADPS4_DBG_VIEWPORT_SCALE=<0..1> shrinks everything that is
     // drawn towards the corner of its target. The picture is wrong, but how much faster the GPU
     // gets tells how much of its time goes into filling pixels rather than into the draws
@@ -1599,10 +1686,14 @@ void Rasterizer::UpdateViewportScissorState() const {
         for (auto& scissor : scissors) {
             scissor.offset.x = static_cast<s32>(scissor.offset.x * debug_scale);
             scissor.offset.y = static_cast<s32>(scissor.offset.y * debug_scale);
-            scissor.extent.width =
-                std::max(static_cast<u32>(scissor.extent.width * debug_scale), 1u);
-            scissor.extent.height =
-                std::max(static_cast<u32>(scissor.extent.height * debug_scale), 1u);
+            if (scissor.extent.width != 0) {
+                scissor.extent.width =
+                    std::max(static_cast<u32>(scissor.extent.width * debug_scale), 1u);
+            }
+            if (scissor.extent.height != 0) {
+                scissor.extent.height =
+                    std::max(static_cast<u32>(scissor.extent.height * debug_scale), 1u);
+            }
         }
     }
 

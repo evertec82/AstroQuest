@@ -10,6 +10,10 @@
 # ASTRO_FRESH=1 runs with the runtime as the installed app carries it (unpacked from the APK's
 # assets, like on the app's first start) instead of with the build in build/arm64.
 #
+# HOST_... among the variables are the test's own (README-QUEST-VR.md, "Testing on the headset
+# without wearing it"): a display and a compositor stand-in, where the head looks, what is
+# said of the controller (HOST_PAD), how often a picture is kept (HOST_SHOTS).
+#
 # ASTRO_MIC=real makes the game's microphone the headset's own instead of the test signal the
 # app otherwise feeds it (a second of noise every five); the app needs the permission for it
 # (adb shell pm grant com.astrobotquest.vrhost android.permission.RECORD_AUDIO).
@@ -20,7 +24,9 @@ root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 ADB="$LOCALAPPDATA/Android/Sdk/platform-tools/adb.exe"
 # The headset also shows up over the network: name the USB connection.
 export ANDROID_SERIAL=${ANDROID_SERIAL:-$(cat "$(dirname "${BASH_SOURCE[0]}")/quest-serial.local" 2>/dev/null)}
-package=com.astrobotquest.vrhost
+# (ASTRO_PACKAGE: the build made by quest-host/build.sh --test-package, if that is the
+# one to run.)
+package=${ASTRO_PACKAGE:-com.astrobotquest.vrhost}
 stage=/data/local/tmp/astro
 seconds=${1:-60}
 shift $(( $# < 1 ? $# : 1 ))
@@ -46,10 +52,10 @@ if [ -n "${ASTRO_FRESH:-}" ]; then
 else
   # The runtime the app unpacks on its first start, with the current build of the core in it.
   # Without its stamp, so that the app unpacks its own again when it is started for real.
-  "$ADB" shell "am instrument -w -e cmd 'mkdir -p runtime/host; rm -f runtime/.stamp; [ -d runtime/drivers ] || cp -r $stage/runtime/. runtime/; cp $stage/shadps4-arm64-fex runtime/host/shadps4-arm64-fex; cp $stage/libkgsl_compat.so runtime/host/libkgsl_compat.so' $package/.SandboxShell" > /dev/null
+  "$ADB" shell "am instrument -w -e cmd 'mkdir -p runtime/host; rm -f runtime/.stamp; [ -d runtime/drivers ] || cp -r $stage/runtime/. runtime/; cp $stage/shadps4-arm64-fex runtime/host/shadps4-arm64-fex; cp $stage/libkgsl_compat.so runtime/host/libkgsl_compat.so' $package/com.astrobotquest.vrhost.SandboxShell" > /dev/null
 fi
 
-"$ADB" shell "am instrument -w -e selftest $seconds -e env '$extra_env' -e mic ${ASTRO_MIC:-test} $install $package/.SandboxShell" \
+"$ADB" shell "am instrument -w -e selftest $seconds -e env '$extra_env' -e mic ${ASTRO_MIC:-test} $install $package/com.astrobotquest.vrhost.SandboxShell" \
   | sed -e 's/^INSTRUMENTATION_RESULT: stream=//' -e '/^INSTRUMENTATION_CODE/d'
 
 rm -rf build/quest/selftest/*

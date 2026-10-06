@@ -7,10 +7,16 @@
 # build/arm64 (tools/build-arm64.sh).
 #
 #   quest-host/build.sh [--driver <zip inside the APK's assets/drivers>] [--trade-cpu-for-gpu]
+#                       [--test-package]
 #
 # --trade-cpu-for-gpu builds the app that gives up one processor clock level (1.92 -> 1.65 GHz
 # on a Quest 3) for one more GPU clock level (up to 640 MHz instead of 599). The system only
 # takes that choice from the manifest, so it is a build of its own.
+#
+# --test-package builds the same app under another name (com.astrobotquest.vrhost.test,
+# "Astro VR Host (test)", build/quest/astro-vr-host-test.apk, debug key): it installs next to
+# the app proper and touches neither it nor its saves, for trying a build on a headset whose
+# owner plays with the other one (the tools take ASTRO_PACKAGE for which of the two they run).
 set -euo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -32,10 +38,12 @@ driver="turnip-vauzi-7xx-EMULATOR.zip"
 prefix_map="-ffile-prefix-map=$(cygpath -m "$root")/="
 
 trade=""
+test_package=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --driver) driver=$2; shift 2 ;;
     --trade-cpu-for-gpu) trade=1; shift ;;
+    --test-package) test_package=com.astrobotquest.vrhost.test; shift ;;
     *) echo "unknown option $1" >&2; exit 64 ;;
   esac
 done
@@ -100,6 +108,7 @@ echo "== native"
   -Wno-missing-field-initializers \
   -I "$(cygpath -m "$OPENXR/prefab/modules/headers/include")" \
   -I "$(cygpath -m "$root/shadps4-arm64-main/src/core/vr")" \
+  -I "$(cygpath -m "$root/shadps4-arm64-main/src/input")" \
   "$(cygpath -m "$host/cpp/main.cpp")" "$(cygpath -m "$host/cpp/core_process.cpp")" \
   "$(cygpath -m "$host/cpp/xr_host.cpp")" "$(cygpath -m "$host/cpp/gl_frames.cpp")" \
   "$(cygpath -m "$host/cpp/self_test.cpp")" "$(cygpath -m "$host/cpp/log.cpp")" \
@@ -133,10 +142,25 @@ if [[ -n "$trade" ]]; then
   grep -q trade_cpu_for_gpu_amount "$manifest" || { echo "could not add the trade to the manifest" >&2; exit 1; }
   echo "   with one processor level traded for one GPU level"
 fi
-"$BUILD_TOOLS/aapt2.exe" compile --dir "$(cygpath -m "$host/res")" -o "$(cygpath -m "$out/res.zip")"
+res="$host/res"
+rename=()
+apk="$out/astro-vr-host.apk"
+if [[ -n "$test_package" ]]; then
+  # Another name for the system and for the eye; the classes keep theirs.
+  res="$out/res-test"
+  rm -rf "$res"
+  cp -r "$host/res" "$res"
+  sed -i 's|>Astro VR Host<|>Astro VR Host (test)<|' "$res/values/strings.xml"
+  grep -q "(test)" "$res/values/strings.xml" || { echo "could not rename the test app" >&2; exit 1; }
+  rename=(--rename-manifest-package "$test_package"
+          --rename-instrumentation-target-package "$test_package")
+  apk="$out/astro-vr-host-test.apk"
+  echo "   as $test_package"
+fi
+"$BUILD_TOOLS/aapt2.exe" compile --dir "$(cygpath -m "$res")" -o "$(cygpath -m "$out/res.zip")"
 "$BUILD_TOOLS/aapt2.exe" link -o "$(cygpath -m "$out/base.apk")" \
   -I "$(cygpath -m "$PLATFORM_JAR")" --manifest "$(cygpath -m "$manifest")" \
-  -A "$(cygpath -m "$out/apk/assets")" --debug-mode \
+  -A "$(cygpath -m "$out/apk/assets")" --debug-mode "${rename[@]}" \
   --min-sdk-version 32 --target-sdk-version 32 "$(cygpath -m "$out/res.zip")"
 "$PYTHON" - "$out/base.apk" "$out/apk" <<'PY'
 import os, sys, zipfile
@@ -151,7 +175,7 @@ PY
 # An update only installs over an app signed with the same key. Releases are signed with the
 # key named in tools/signing.local (two lines: the keystore, then a file holding its password;
 # neither belongs in the repository), other builds with the Android SDK's debug key.
-if [[ -f "$root/tools/signing.local" ]]; then
+if [[ -f "$root/tools/signing.local" && -z "$test_package" ]]; then
   { read -r keystore; read -r password_file; } < <(tr -d '\r' < "$root/tools/signing.local")
   # (Its key has the keystore's password: apksigner then needs no --key-pass.)
   signing=(--ks "$keystore" --ks-pass "file:$password_file")
@@ -162,6 +186,6 @@ else
   echo "   signed with the debug key"
 fi
 java -jar "$(cygpath -m "$BUILD_TOOLS/lib/apksigner.jar")" sign "${signing[@]}" \
-  --out "$(cygpath -m "$out/astro-vr-host.apk")" "$(cygpath -m "$out/aligned.apk")"
+  --out "$(cygpath -m "$apk")" "$(cygpath -m "$out/aligned.apk")"
 
-ls -la "$out/astro-vr-host.apk"
+ls -la "$apk"

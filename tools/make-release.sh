@@ -63,19 +63,22 @@ json.dump(config, open(sys.argv[2], "w", encoding="utf-8"), indent=2)
 EOF
 
 cat > "$pc/games/PUT YOUR GAME HERE.txt" <<'EOF'
-Put your own copy of ASTRO BOT Rescue Mission (European release CUSA12392, version 1.00) in
-this folder, then start "Play Astro Bot VR.bat". Either form will do, anywhere in here:
+Put your own copy of ASTRO BOT Rescue Mission (European release CUSA12392, version 1.00 or
+1.04) in this folder, then start "Play Astro Bot VR.bat". Either form will do, anywhere in
+here:
 
 - the game's folder, the one with eboot.bin in it, or
 - the game's .pkg file: it is unpacked the first time, which takes a minute and about 13 GB.
   (Only a package made from a dump of the game can be unpacked. One downloaded from the
-  PlayStation Store is encrypted and cannot be used.)
+  PlayStation Store is encrypted and cannot be used. A package that is only the game's
+  update is not the game: see "The game's versions" in README-PC-VR.md on GitHub.)
 
 If the game is somewhere else, just start: a window asks where it is.
 EOF
 cat > "$pc/README.txt" <<EOF
-AstroQuest $version - ASTRO BOT Rescue Mission in VR, played on this PC and shown in a Meta
-Quest through Virtual Desktop. https://github.com/bigmak94/AstroQuest
+AstroQuest $version - ASTRO BOT Rescue Mission in VR, played on this PC and shown in a headset:
+a Meta Quest through Virtual Desktop, or a PC headset through SteamVR or an OpenXR runtime of
+its own. https://github.com/bigmak94/AstroQuest
 
 1. Put your own copy of the game in the games folder: its folder (the one with eboot.bin in
    it) or its .pkg file, which is unpacked the first time. Or skip this: a window asks where
@@ -83,14 +86,23 @@ Quest through Virtual Desktop. https://github.com/bigmak94/AstroQuest
    open the game's files whose full path would be longer than 260 characters.
 2. Virtual Desktop: install the Streamer on this PC and choose VDXR as the OpenXR runtime in
    its Options. In the headset, set Virtual Desktop's frame rate to 120 (Streaming settings).
+   (With SteamVR instead: start it and see that the headset is ready.)
 3. Connect the DualSense to this PC (USB cable, or Bluetooth paired with the PC, not with the
-   headset). Without a gamepad the headset's Touch controllers play.
-4. Connect Virtual Desktop to this PC, then start "Play Astro Bot VR.bat". (If the Microsoft
-   Visual C++ runtime is missing, it says so and offers Microsoft's download.)
+   headset). The headset's own controllers play too: without a gamepad, and with one
+   whenever they were used after it.
+4. Connect Virtual Desktop to this PC, then start "Play Astro Bot VR.bat": its window says
+   what does what, and has the game's language to choose (Windows' own unless you say
+   otherwise). (If the Microsoft Visual C++ runtime is missing, it says so and offers
+   Microsoft's download.)
 
 In the game: hold the controller where the outline is on the first screen; look at a planet
-and press X to choose it; hold OPTIONS for a second to reset the view. Settings are in
-pc-vr\settings.txt, the log in pc-vr\user\log\shad_log.txt, saves in pc-vr\user\home.
+and press X to choose it; hold OPTIONS for a second to reset the view. With the headset's
+controllers or a gamepad without a touchpad: right trigger presses the touchpad, right grip
+(R1) swipes forward, left trigger pulls back and lets go (the catapult at the end of a level).
+To turn round without turning yourself: hold L1 (the headset's controllers: the left grip)
+and flick the right stick to a side.
+Settings are in pc-vr\settings.txt, the log in pc-vr\user\log\shad_log.txt, saves in
+pc-vr\user\home.
 
 AstroQuest is free software under the GNU GPL, version 2 or later (LICENSE.txt); the source is
 at the address above. It contains no part of the game: use it only with a game you own.

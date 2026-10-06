@@ -226,16 +226,16 @@ void Translator::EmitPrologue(IR::Block* first_block) {
         }
         break;
     case LogicalStage::Geometry:
-        switch (runtime_info.gs_info.out_primitive[0]) {
-        case AmdGpu::GsOutputPrimitiveType::TriangleStrip:
-            ir.SetVectorReg(IR::VectorReg::V3, ir.Imm32(2u)); // vertex 2
-        case AmdGpu::GsOutputPrimitiveType::LineStrip:
-            ir.SetVectorReg(IR::VectorReg::V1, ir.Imm32(1u)); // vertex 1
-        default:
-            ir.SetVectorReg(IR::VectorReg::V0, ir.Imm32(0u)); // vertex 0
-            break;
-        }
+        // GCN's GS input ABI is independent of the output topology. The ring access pass
+        // uses these relative vertex offsets after the shader converts them to bytes.
+        ir.SetVectorReg(IR::VectorReg::V0, ir.Imm32(0u)); // vertex 0
+        ir.SetVectorReg(IR::VectorReg::V1, ir.Imm32(1u)); // vertex 1
         ir.SetVectorReg(IR::VectorReg::V2, ir.GetAttributeU32(IR::Attribute::PrimitiveId));
+        ir.SetVectorReg(IR::VectorReg::V3, ir.Imm32(2u)); // vertex 2
+        ir.SetVectorReg(IR::VectorReg::V4, ir.Imm32(3u)); // vertex 3 (adjacency)
+        ir.SetVectorReg(IR::VectorReg::V5, ir.Imm32(4u)); // vertex 4 (adjacency)
+        ir.SetVectorReg(IR::VectorReg::V6, ir.Imm32(5u)); // vertex 5 (adjacency)
+        ir.SetVectorReg(IR::VectorReg::V7, ir.GetAttributeU32(IR::Attribute::InvocationId));
         break;
     default:
         UNREACHABLE_MSG("Unknown shader stage");

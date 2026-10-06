@@ -41,14 +41,17 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 
 /**
  * Hosts the PS4 emulator core on a Meta Quest: installs its Linux runtime, starts it, feeds it a
- * paired DualSense as the DualShock 4 the game expects (buttons, sticks, touchpad, motion
- * sensors in; rumble and light bar colour out) and lets the native side show its frames in the
- * headset.
+ * gamepad paired with the headset as the DualShock 4 the game expects (of a DualSense
+ * everything: buttons, sticks, touchpad, motion sensors in; rumble and light bar colour out;
+ * of other gamepads what they have) and lets the native side show its frames in the headset.
+ * The headset's own controllers play as well; those the native side reads itself, and it
+ * decides which of the two the game is played with (PadRouter).
  *
  * Files the user provides live in the app's external folder
  * (/sdcard/Android/data/com.astrobotquest.vrhost/files):
@@ -70,9 +73,6 @@ public class MainActivity extends Activity
     private static final int TRIANGLE = 0x1000, CIRCLE = 0x2000, CROSS = 0x4000, SQUARE = 0x8000;
     private static final int TOUCHPAD = 0x100000;
 
-    // The touchpad as the emulator takes it: the resolution of a DualSense's.
-    private static final int TOUCH_WIDTH = 1920, TOUCH_HEIGHT = 1080;
-
     private static final int STATUS_WIDTH = 1024, STATUS_HEIGHT = 512;
 
     /** Second place games are looked for; every app may read what adb puts there. */
@@ -93,7 +93,8 @@ public class MainActivity extends Activity
 
     private native void nativeStartXr(float refreshRate, int eyeWidth, int eyeHeight,
             boolean trackHands, int sharpen, boolean cubic, boolean showStats, float predictMs,
-            int dynamicResolution, boolean cpuBoost);
+            int dynamicResolution, boolean cpuBoost, boolean ownControllers, int padHand,
+            float padTilt, boolean rumble, boolean stickTouchpad);
 
     private native boolean nativeStartCore(String loader, String runtimeRoot, String storageRoot,
             String game, String logFile, String[] extraArgs, String[] extraEnv);
@@ -108,12 +109,48 @@ public class MainActivity extends Activity
 
     private native void nativeSetStatusImage(ByteBuffer pixels);
 
-    private native void nativeInput(int buttons, int leftX, int leftY, int rightX, int rightY,
-            int leftTrigger, int rightTrigger, boolean touchDown, int touchX, int touchY);
+    /**
+     * What the gamepad says: sticks from -1 to 1, triggers from 0 to 1, the finger on its own
+     * touchpad from 0 to 1 across and from its far edge.
+     */
+    private native void nativeInput(int buttons, float leftX, float leftY, float rightX,
+            float rightY, float leftTrigger, float rightTrigger, boolean touchDown, float touchX,
+            float touchY);
 
     private native void nativeMotion(float gx, float gy, float gz, float ax, float ay, float az);
 
     private native long nativePadFeedback();
+
+    /**
+     * A gamepad is there to play with (again, or another one), or none is any more.
+     * touchpad: it has a touchpad of its own, and needs no buttons to stand in for one.
+     */
+    private native void nativeSetGamepad(boolean connected, boolean touchpad);
+
+    /** How often OPTIONS was pressed in the game so far, on whichever controller. */
+    private native int nativeOptionsPresses();
+
+    /** Shows the panel over the game's picture, for what is to be read while playing. */
+    private native void nativeShowPanel(boolean show);
+
+    /** The start-up menu is over: what the player presses is the game's. */
+    private native void nativeSetPlaying(boolean playing);
+
+    /** What the game is played with, see the CONTROLLER_ constants. */
+    private native int nativeController();
+
+    /** The player chose with it in the start-up menu. */
+    private native void nativeUseController(int which);
+
+    /** What the headset's own controllers say to the start-up menu, see the MENU_ constants. */
+    private native int nativeTouchMenu();
+
+    private static final int CONTROLLER_WHICH = 3, CONTROLLER_GAMEPAD = 1, CONTROLLER_OWN = 2;
+    /** Added to it while the headset's own controllers are in the player's hands. */
+    private static final int CONTROLLER_OWN_HELD = 4;
+    /** Added where what the game is played with has no touchpad: buttons do its gestures. */
+    private static final int CONTROLLER_GESTURE_BUTTONS = 8;
+    private static final int MENU_LEFT = 1, MENU_RIGHT = 2, MENU_CONFIRM = 4;
 
     private static final int VENDOR_SONY = 0x054c;
     private static final int VENDOR_META = 0x2833;
@@ -126,6 +163,10 @@ public class MainActivity extends Activity
     private native int nativeXrStatus();
 
     private native void nativeSetMicrophone(boolean enabled, float gain);
+
+    private native void nativeSetFieldOfView(int percent);
+
+    private native float[] nativeHeadsetFov();
 
     private static native void nativeSetLogFile(String path);
 
@@ -146,6 +187,11 @@ public class MainActivity extends Activity
     private float padTouchX, padTouchY;
     private boolean padTouchClick;
     private final float[] acceleration = {0.0f, 9.81f, 0.0f};
+    /** Whose sticks and triggers the fields below describe. */
+    private int axesDevice = -1;
+    private int rightXAxis = MotionEvent.AXIS_Z, rightYAxis = MotionEvent.AXIS_RZ;
+    /** The gamepad says how far its triggers are pulled, and not only that they are. */
+    private boolean analogTriggers = true;
 
     // The controller itself: what the game's feedback goes to.
     private InputDevice gamepad;
@@ -161,6 +207,11 @@ public class MainActivity extends Activity
     private boolean motion = true;
     private boolean rumble = true;
     private boolean trackHands = true;
+    private boolean ownControllers = true;
+    private int padHand = 1;
+    private float padTilt;
+    // The language the game is played in: the headset's own, or the one the settings name.
+    private String language = "";
     private int sharpen = 1;
     private boolean cubic;
     private boolean antialias = true;
@@ -172,10 +223,28 @@ public class MainActivity extends Activity
     private int dynamicResolution = 1;
     private boolean cpuBoost = true;
     /**
-     * How much of the PlayStation VR's field of view the game draws, in percent: less than all
+     * How much of the user's headset projection the game draws, in percent: less than all
      * of it for more pixels to the degree, which is what the player asked for.
      */
     private int fieldOfView = 85;
+    private boolean choosingFov;
+    private int fovConfirmKey = KeyEvent.KEYCODE_UNKNOWN;
+    private long nextFovMoveAt;
+    private float[] headsetFov;
+    private static final int FOV_MIN = 50, FOV_MAX = 100, FOV_STEP = 5;
+    private long nextOwnFovMoveAt;
+    /** The card that says which buttons do the touchpad's gestures: shown until then. */
+    private long cardUntil;
+    private boolean cardShowing;
+    /** Which controller it was last shown for, and the presses of OPTIONS counted then. */
+    private int cardShownFor;
+    private int optionsSeen;
+    private static final long CARD_AT_START_MS = 15000, CARD_ON_PAUSE_MS = 10000;
+    /**
+     * What confirms the menu on the headset's own controllers has been seen let go while the
+     * menu showed: the trigger that started the app from the headset's library is not it.
+     */
+    private boolean ownConfirmArmed;
     /**
      * Set by the test that runs the activity without showing it (SandboxShell "drystart"):
      * nothing is asked of the user or of the system's window manager then.
@@ -183,13 +252,6 @@ public class MainActivity extends Activity
     private boolean dryRun;
     private int statusPictures;
     private float microphoneGain = 1.0f;
-    private boolean seatTaken;
-    /** How long OPTIONS is held for the view to be reset, as on a PlayStation VR. */
-    private static final long OPTIONS_HOLD_MS = 1000;
-    private final Runnable optionsHeld = () -> {
-        logInfo("OPTIONS held: view reset");
-        nativeRecenter(RECENTER_PAD | RECENTER_SEAT);
-    };
     private long quietFrames = -1;
     private long quietSince;
     private long statsFrames = -1;
@@ -224,24 +286,35 @@ public class MainActivity extends Activity
         logInfo("Astro VR Host " + versionName() + " on " + Build.MODEL + ", system "
                 + Build.DISPLAY);
 
-        readSettings();
-        nativeStartXr(refreshRate, 1440, 1536, trackHands, sharpen, cubic, showStats, predictMs,
-                dynamicResolution, cpuBoost);
-        nativeSetMicrophone(microphone, microphoneGain);
-        if (microphone && !dryRun && checkSelfPermission(Manifest.permission.RECORD_AUDIO)
-                != PackageManager.PERMISSION_GRANTED) {
-            // The game listens to the headset's microphone, as it did to PlayStation VR's:
-            // blowing at things is one of the ways to play with its world.
-            logInfo("asking for the microphone");
-            requestPermissions(new String[] {Manifest.permission.RECORD_AUDIO},
-                    REQUEST_MICROPHONE);
+        // vrhost.txt takes precedence over the last choice, and seeds the menu each launch.
+        if (!dryRun) {
+            fieldOfView = Math.max(FOV_MIN, Math.min(FOV_MAX,
+                    getPreferences(MODE_PRIVATE).getInt("fov", fieldOfView)));
         }
+        readSettings();
+        choosingFov = !dryRun;
+        nativeStartXr(refreshRate, 1440, 1536, trackHands, sharpen, cubic, showStats, predictMs,
+                dynamicResolution, cpuBoost, ownControllers, padHand, padTilt, rumble,
+                stickTouchpad);
 
         InputManager inputManager = getSystemService(InputManager.class);
         inputManager.registerInputDeviceListener(this, handler);
         findGamepad();
 
-        new Thread(this::setUpAndStart, "setup").start();
+        if (dryRun) {
+            // Nobody sees the menu in a test: it is drawn for the pictures the test keeps,
+            // once the way it waits for the headset and once with a headset's view.
+            drawFovMenu();
+            headsetFov = new float[] {1.376f, 0.839f, 0.966f, 1.428f};
+            drawFovMenu();
+            headsetFov = null;
+            // Likewise the cards that say which buttons do the touchpad's gestures.
+            drawStatus("The touchpad, on this controller", controlsCard(true));
+            drawStatus("The touchpad, on this controller", controlsCard(false));
+            startGame();
+        } else {
+            handler.post(this::pollOwnControllers);
+        }
         handler.post(this::refreshStatus);
         handler.post(this::applyFeedback);
     }
@@ -302,7 +375,7 @@ public class MainActivity extends Activity
     public void onWindowFocusChanged(boolean hasFocus) {
         super.onWindowFocusChanged(hasFocus);
         logInfo(hasFocus ? "input focus gained" : "input focus lost");
-        if (hasFocus) {
+        if (hasFocus && !choosingFov) {
             // Gives the controller's touchpad to the game instead of a mouse pointer.
             inputView.requestPointerCapture();
         }
@@ -340,6 +413,12 @@ public class MainActivity extends Activity
      *                          emulator has it run by the clock
      *   hands=0                do not use hand tracking to place the controller; it is then held
      *                          at a fixed spot in front of the player
+     *   own_controllers=0      never play with the headset's own controllers, whoever holds them
+     *   pad_hand=left          with those, the left one is the controller in the game instead of
+     *                          the right one
+     *   pad_tilt=-15           for a gamepad without motion sensors, which the hands holding it
+     *                          turn and tilt in the game: how many degrees higher (lower, if
+     *                          negative) its front points than the hands do, -60 to 60
      *   sharpen=0              leave the picture as soft as it gets from being shown larger
      *                          than it was drawn. By default (1) the emulator sharpens it once
      *                          per frame of the game. 2 has the headset do it instead, with its
@@ -350,7 +429,8 @@ public class MainActivity extends Activity
      *   cubic=1                have the headset enlarge the picture with a cubic filter instead
      *                          of a linear one: sharper, for some GPU time on every refresh
      *   stick_touchpad=0       stop using the right stick as a finger on the touchpad
-     *   motion=0               ignore the controller's motion sensors
+     *   motion=0               ignore the controller's motion sensors (the hands holding it
+     *                          then say how it is turned, as for a gamepad that has none)
      *   rumble=0               no vibration
      *   msaa=4                 let the game multisample as it does on the console (1, 2 or 4).
      *                          The default of 1 turns that off: it is by far the most expensive
@@ -368,11 +448,11 @@ public class MainActivity extends Activity
      *                          picture at the recommended size, as up to version 0.6
      *   cpu_boost=0            do not ask for the processor's fastest clock, which the system
      *                          otherwise grants for the first 45 seconds and now and then
-     *   fov=100                have the game draw that many percent of the field of view it
-     *                          draws on a PlayStation VR (100 by 103 degrees an eye), and show
-     *                          it over that much: the same pixels over fewer degrees is a sharper
-     *                          picture, with a black border where the rest was. Default 85 (18%
-     *                          more pixels to the degree); 100 is the console's own, 50 to 120
+     *   fov=100                have the game draw that many percent of this headset's full
+     *                          projection: 100 fills its field of view. Showing the same
+     *                          pixels over fewer degrees is a sharper
+     *                          picture, with a soft squircle border below 100. Default 85;
+     *                          100 is the headset's own, 50 to 100. Seeds the startup menu
      *   mic=0                  the game does not get to hear the headset's microphone
      *   mic_gain=2             make what it hears that many times louder (0.1 to 30), if
      *                          blowing does too little or everything counts as blowing
@@ -430,6 +510,22 @@ public class MainActivity extends Activity
                     case "hands":
                         trackHands = !value.equals("0");
                         break;
+                    case "own_controllers":
+                        ownControllers = !value.equals("0");
+                        break;
+                    case "pad_hand":
+                        padHand = value.equalsIgnoreCase("left") || value.equals("0") ? 0 : 1;
+                        break;
+                    case "pad_tilt":
+                        padTilt = Math.max(-60.0f, Math.min(60.0f, Float.parseFloat(value)));
+                        break;
+                    case "language":
+                        language = value.equalsIgnoreCase("headset") ? "" : value;
+                        break;
+                    case "turn":
+                        extraEnv.add("SHADPS4_VR_TURN="
+                                + Math.max(0, Math.min(90, Integer.parseInt(value))));
+                        break;
                     case "sharpen":
                         sharpen = Math.max(0, Math.min(4, Integer.parseInt(value)));
                         break;
@@ -467,7 +563,7 @@ public class MainActivity extends Activity
                         cpuBoost = !value.equals("0");
                         break;
                     case "fov":
-                        fieldOfView = Math.max(50, Math.min(120, Integer.parseInt(value)));
+                        fieldOfView = Math.max(FOV_MIN, Math.min(FOV_MAX, Integer.parseInt(value)));
                         break;
                     case "mic":
                         microphone = !value.equals("0");
@@ -493,6 +589,34 @@ public class MainActivity extends Activity
     }
 
     // --- runtime and game -----------------------------------------------------------------------
+
+    /** The emulator must see the chosen optics before the game opens its emulated headset. */
+    private void startGame() {
+        if (!dryRun && headsetFov == null) {
+            return;
+        }
+        choosingFov = false;
+        shownStatus = "";
+        // From here on, what the player presses is the game's; what is still held down from
+        // confirming the menu is not, until it is let go.
+        nativeSetPlaying(true);
+        nativeSetFieldOfView(fieldOfView);
+        if (!dryRun) {
+            getPreferences(MODE_PRIVATE).edit().putInt("fov", fieldOfView).apply();
+            logInfo("startup FOV chosen: " + fieldOfView + "%");
+            if (inputView.hasWindowFocus()) {
+                inputView.requestPointerCapture();
+            }
+        }
+        nativeSetMicrophone(microphone, microphoneGain);
+        if (microphone && !dryRun && checkSelfPermission(Manifest.permission.RECORD_AUDIO)
+                != PackageManager.PERMISSION_GRANTED) {
+            logInfo("asking for the microphone");
+            requestPermissions(new String[] {Manifest.permission.RECORD_AUDIO},
+                    REQUEST_MICROPHONE);
+        }
+        new Thread(this::setUpAndStart, "setup").start();
+    }
 
     private void setUpAndStart() {
         try {
@@ -522,7 +646,7 @@ public class MainActivity extends Activity
 
             File storage = new File(getFilesDir(), "core");
             storage.mkdirs();
-            // Settings from vrhost.txt come last: they replace what is set here.
+            // Extra settings replace the defaults; the menu's FOV remains authoritative.
             List<String> env = new ArrayList<>();
             // Saves, firmware modules and logs go where the user can reach them over USB.
             env.add("XDG_DATA_HOME=" + new File(external, "data"));
@@ -568,15 +692,15 @@ public class MainActivity extends Activity
             if (pace >= 2) {
                 env.add("SHADPS4_VR_PACE=" + pace);
             }
-            if (fieldOfView != 100) {
-                env.add("SHADPS4_VR_FOV=" + fieldOfView);
+            if (headsetFov != null) {
+                double angle = horizontalFov(fieldOfView);
+                logInfo("the game draws " + fieldOfView + "% of this headset's field of view: "
+                        + Math.round(angle) + " visible degrees across an eye, "
+                        + Math.round(centerPixelsPerDegree(fieldOfView) * 10) / 10.0
+                        + " pixels per degree at the center"
+                        + " (100 fills the headset; "
+                        + (fieldOfView < 100 ? "soft squircle border" : "no added border") + ")");
             }
-            double angle = Math.toDegrees(Math.atan(1.2074 * fieldOfView / 100.0)
-                    + Math.atan(1.1813 * fieldOfView / 100.0));
-            logInfo("the game draws " + fieldOfView + "% of PlayStation VR's field of view: "
-                    + Math.round(angle) + " degrees across an eye, "
-                    + Math.round(1440 / angle * 10) / 10.0 + " pixels to the degree at most"
-                    + " (fov= in vrhost.txt; 100 is the console's own)");
             if (!antialias) {
                 env.add("SHADPS4_RESOLVE_AA=0");
             }
@@ -585,7 +709,19 @@ public class MainActivity extends Activity
                 // twice as many, and enlarges its scene to get even there.
                 env.add("SHADPS4_VR_SHARPEN=0.6");
             }
+            // The game speaks the language its console is set to, if it has it (English
+            // otherwise): the one the headset is set to, unless the settings name another.
+            env.add("SHADPS4_CONSOLE_LANGUAGE="
+                    + (language.isEmpty() ? Locale.getDefault().toLanguageTag() : language));
             env.addAll(extraEnv);
+            // Explicit even at 100, so an inherited environment cannot change the choice.
+            env.add("SHADPS4_VR_FOV=" + fieldOfView);
+            env.add("SHADPS4_VR_FOV_OF=headset");
+            env.add("SHADPS4_VR_FOV_SYMMETRIC=1");
+            if (headsetFov != null) {
+                env.add("SHADPS4_VR_HEADSET_FOV_TAN=" + headsetFov[0] + "," + headsetFov[1]
+                        + "," + headsetFov[2] + "," + headsetFov[3]);
+            }
 
             setupStatus = "Starting the emulator...";
             keepPrevious(new File(external, "core.log"), new File(external, "core.prev.log"));
@@ -627,6 +763,18 @@ public class MainActivity extends Activity
     // --- status panel ---------------------------------------------------------------------------
 
     private void refreshStatus() {
+        if (choosingFov) {
+            headsetFov = nativeHeadsetFov();
+            String status = "fov:" + fieldOfView + ":" + (gamepad != null) + ":"
+                    + ((nativeController() & CONTROLLER_OWN_HELD) != 0)
+                    + ":" + Arrays.toString(headsetFov);
+            if (!status.equals(shownStatus)) {
+                shownStatus = status;
+                drawFovMenu();
+            }
+            handler.postDelayed(this::refreshStatus, 500);
+            return;
+        }
         String status = setupStatus;
         if (!setupFailed) {
             switch (nativeCoreState()) {
@@ -662,22 +810,80 @@ public class MainActivity extends Activity
                     break;
             }
             // Waiting is the moment to say what the game will be played with.
-            if (gamepad == null) {
-                status += "\n\nNo controller found. Switch the DualSense on (PS button); pair it "
-                        + "first under Settings > Bluetooth if it never was.";
-            } else {
+            int controller = nativeController();
+            if ((controller & CONTROLLER_WHICH) == CONTROLLER_OWN) {
+                status += "\n\nController: the headset's own (A cross, B square, X circle, Y "
+                        + "triangle, right stick = touchpad, menu button = OPTIONS)."
+                        + "\nTo reset the view, hold the menu button for a second or press both "
+                        + "sticks in.";
+            } else if (gamepad != null) {
                 status += "\n\nController: " + gamepad.getName()
-                        + (controllerSensors != null ? "" : " (no motion sensors)")
-                        + "\nTo reset the view, hold OPTIONS for a second or press the PS button: "
-                        + "where you are then is your seat, and the way you face is straight "
+                        + (controllerSensors != null ? ""
+                                : " (no motion sensors: your hands turn it in the game)")
+                        + "\nTo reset the view, hold OPTIONS for a second"
+                        + (gamepad.getVendorId() == VENDOR_SONY ? " or press the PS button" : "")
+                        + ": where you are then is your seat, and the way you face is straight "
                         + "ahead.";
+            } else {
+                status += "\n\nNo controller found. Pick up the headset's controllers, or switch "
+                        + "a gamepad on (pair it first under Settings > Bluetooth if it never "
+                        + "was).";
             }
+        }
+        // On a controller without a touchpad, buttons do what the game wants done on one:
+        // which ones is said over the game once it shows, and again whenever OPTIONS is
+        // pressed (the game's pause), for as long as it takes to read.
+        String title = "Astro VR Host";
+        int controller = nativeController();
+        int presses = nativeOptionsPresses();
+        long clock = SystemClock.elapsedRealtime();
+        boolean playing = !setupFailed && nativeCoreState() == CORE_RUNNING
+                && nativeFrameCount() > 0;
+        if (playing && (controller & CONTROLLER_GESTURE_BUTTONS) != 0) {
+            if (cardShownFor != (controller & CONTROLLER_WHICH)) {
+                cardShownFor = controller & CONTROLLER_WHICH;
+                cardUntil = clock + CARD_AT_START_MS;
+            } else if (presses != optionsSeen) {
+                cardUntil = clock + CARD_ON_PAUSE_MS;
+            }
+        }
+        optionsSeen = presses;
+        boolean card = playing && (controller & CONTROLLER_GESTURE_BUTTONS) != 0
+                && clock < cardUntil;
+        if (card != cardShowing) {
+            cardShowing = card;
+            nativeShowPanel(card);
+        }
+        if (card) {
+            title = "The touchpad, on this controller";
+            status = controlsCard((controller & CONTROLLER_WHICH) == CONTROLLER_OWN);
         }
         if (!status.equals(shownStatus)) {
             shownStatus = status;
-            drawStatus(status);
+            drawStatus(title, status);
         }
-        handler.postDelayed(this::refreshStatus, 500);
+        handler.postDelayed(this::refreshStatus, card || playing ? 250 : 500);
+    }
+
+    /** Which buttons do what a finger does on a DualShock 4's touchpad. */
+    private String controlsCard(boolean ownControllers) {
+        if (ownControllers) {
+            String pad = padHand == 0 ? "Left" : "Right";
+            String other = padHand == 0 ? "Right" : "Left";
+            return pad + " trigger: press the touchpad (water, guns)\n"
+                    + pad + " grip: swipe forward (hook, stars, chests)\n"
+                    + other + " trigger: pull back, aim at the goal, let go (catapult)\n"
+                    + "Right stick: a finger on the touchpad\n"
+                    + other + " grip held, right stick to a side: turn the view\n"
+                    + "X and Y together: blow\n"
+                    + "The menu button brings this back.";
+        }
+        return "R2: press the touchpad (water, guns)\n"
+                + "R1: swipe forward (hook, stars, chests)\n"
+                + "L2: pull back, aim at the goal, let go (catapult)\n"
+                + "Right stick: a finger on the touchpad\n"
+                + "L1 held, right stick to a side: turn the view\n"
+                + "OPTIONS brings this back.";
     }
 
     /** What the game and the display are doing, for the panel that stats=1 keeps in view. */
@@ -697,10 +903,128 @@ public class MainActivity extends Activity
         String rate = statsRate;
         int xr = nativeXrStatus();
         return "Game: " + rate + " frames a second\nDisplay: " + ((xr >> 8) & 0xff) + " Hz\n"
-                + "Hands holding the controller: " + ((xr & 2) != 0 ? "seen" : "not seen");
+                + ((nativeController() & CONTROLLER_WHICH) == CONTROLLER_OWN
+                        ? "The headset's controller: " + ((xr & 4) != 0 ? "seen" : "not seen")
+                        : "Hands holding the controller: " + ((xr & 2) != 0 ? "seen" : "not seen"));
     }
 
-    private void drawStatus(String status) {
+    /** Visible coverage is the symmetric render envelope clipped by the actual headset. */
+    private double horizontalFov(int percent) {
+        double renderTan = Math.max(headsetFov[0], headsetFov[1]) * percent / 100.0;
+        return Math.toDegrees(Math.atan(Math.min(headsetFov[0], renderTan))
+                + Math.atan(Math.min(headsetFov[1], renderTan)));
+    }
+
+    private double centerPixelsPerDegree(int percent) {
+        double renderTan = Math.max(headsetFov[0], headsetFov[1]) * percent / 100.0;
+        return 1440 * Math.PI / 180 / (2 * renderTan);
+    }
+
+    /** A popup drawn into the OpenXR panel: visible in both eyes while the core is still idle. */
+    private void drawFovMenu() {
+        Bitmap bitmap = Bitmap.createBitmap(STATUS_WIDTH, STATUS_HEIGHT, Bitmap.Config.ARGB_8888);
+        Canvas canvas = new Canvas(bitmap);
+        Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        paint.setColor(Color.rgb(16, 20, 32));
+        canvas.drawRoundRect(new RectF(0, 0, STATUS_WIDTH, STATUS_HEIGHT), 40, 40, paint);
+
+        paint.setColor(Color.rgb(90, 170, 255));
+        paint.setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD));
+        paint.setTextSize(44);
+        canvas.drawText("Choose your field of view", 48, 78, paint);
+        paint.setColor(Color.WHITE);
+        paint.setTypeface(Typeface.DEFAULT);
+        paint.setTextSize(27);
+        canvas.drawText("100% uses the full field of view of your headset.", 48, 126, paint);
+        canvas.drawText("A narrower view improves pixels per degree (PPD) and clarity.", 48, 162, paint);
+
+        paint.setTextAlign(Paint.Align.CENTER);
+        paint.setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD));
+        paint.setTextSize(40);
+        canvas.drawText(headsetFov == null ? fieldOfView + "% of your headset FOV"
+                : fieldOfView + "%  /  about " + Math.round(horizontalFov(fieldOfView))
+                        + " degrees per eye", STATUS_WIDTH / 2.0f, 226, paint);
+        paint.setTypeface(Typeface.DEFAULT);
+        paint.setTextSize(25);
+        String density = "Detecting your headset's field of view...";
+        if (headsetFov != null) {
+            int gain = (int) Math.round((100.0 / fieldOfView - 1) * 100);
+            density = gain == 0 ? "Full headset FOV / original pixel density"
+                    : "About " + gain + "% more pixels per degree at the center than at 100%";
+        }
+        canvas.drawText(density, STATUS_WIDTH / 2.0f, 266, paint);
+
+        paint.setColor(Color.rgb(48, 56, 76));
+        canvas.drawRoundRect(new RectF(120, 302, 904, 314), 6, 6, paint);
+        float sliderX = 120 + (fieldOfView - FOV_MIN) * 784.0f / (FOV_MAX - FOV_MIN);
+        paint.setColor(Color.rgb(90, 170, 255));
+        canvas.drawRoundRect(new RectF(120, 302, sliderX, 314), 6, 6, paint);
+        canvas.drawCircle(sliderX, 308, 13, paint);
+        paint.setColor(Color.LTGRAY);
+        paint.setTextSize(23);
+        paint.setTextAlign(Paint.Align.LEFT);
+        canvas.drawText("50%: sharper", 120, 350, paint);
+        paint.setTextAlign(Paint.Align.RIGHT);
+        canvas.drawText("100%: full headset FOV", 904, 350, paint);
+        paint.setTextAlign(Paint.Align.CENTER);
+        canvas.drawText(fieldOfView < 100 ? "Soft squircle border  /  Default: 85%"
+                : "No added border  /  Default: 85%", STATUS_WIDTH / 2.0f, 385, paint);
+        // Whatever the player has in their hands chooses: a gamepad, or the headset's own
+        // controllers.
+        boolean controller = gamepad != null
+                || (nativeController() & CONTROLLER_OWN_HELD) != 0;
+        paint.setColor(controller ? Color.WHITE : Color.rgb(255, 200, 110));
+        paint.setTextSize(25);
+        canvas.drawText(controller ? "Left / Right on a stick or the D-pad: choose"
+                : "Pick up the controllers, or switch a gamepad on, to choose and start",
+                STATUS_WIDTH / 2.0f, 422, paint);
+
+        paint.setColor(headsetFov != null ? Color.rgb(45, 104, 182) : Color.rgb(48, 56, 76));
+        canvas.drawRoundRect(new RectF(322, 443, 702, 495), 18, 18, paint);
+        paint.setColor(Color.WHITE);
+        paint.setTextSize(28);
+        paint.setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD));
+        canvas.drawText(headsetFov != null ? "X / A or trigger: Play" : "Detecting FOV...",
+                STATUS_WIDTH / 2.0f, 478, paint);
+        publishStatusBitmap(bitmap);
+    }
+
+    private void adjustFov(int direction) {
+        fieldOfView = Math.max(FOV_MIN, Math.min(FOV_MAX, fieldOfView + direction * FOV_STEP));
+        drawFovMenu();
+    }
+
+    /**
+     * The start-up menu, worked with the headset's own controllers: a stick to a side
+     * chooses, A or a trigger starts the game. (The native side reads them; nothing of them
+     * comes this way by itself.)
+     */
+    private void pollOwnControllers() {
+        if (!choosingFov) {
+            return;
+        }
+        int menu = nativeTouchMenu();
+        long now = SystemClock.uptimeMillis();
+        int direction = (menu & MENU_LEFT) != 0 ? -1 : (menu & MENU_RIGHT) != 0 ? 1 : 0;
+        if (direction == 0) {
+            nextOwnFovMoveAt = 0;
+        } else if (now >= nextOwnFovMoveAt) {
+            nativeUseController(CONTROLLER_OWN);
+            adjustFov(direction);
+            nextOwnFovMoveAt = now + 250;
+        }
+        if ((menu & MENU_CONFIRM) == 0) {
+            ownConfirmArmed = true;
+        } else if (ownConfirmArmed && headsetFov != null) {
+            logInfo("the menu was confirmed with the headset's own controllers");
+            nativeUseController(CONTROLLER_OWN);
+            startGame();
+            return;
+        }
+        handler.postDelayed(this::pollOwnControllers, 50);
+    }
+
+    private void drawStatus(String title, String status) {
         Bitmap bitmap = Bitmap.createBitmap(STATUS_WIDTH, STATUS_HEIGHT, Bitmap.Config.ARGB_8888);
         Canvas canvas = new Canvas(bitmap);
         Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -710,7 +1034,7 @@ public class MainActivity extends Activity
         paint.setColor(Color.rgb(90, 170, 255));
         paint.setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD));
         paint.setTextSize(52);
-        canvas.drawText("Astro VR Host", 48, 86, paint);
+        canvas.drawText(title, 48, 86, paint);
 
         paint.setColor(Color.WHITE);
         paint.setTypeface(Typeface.DEFAULT);
@@ -734,7 +1058,11 @@ public class MainActivity extends Activity
             } while (!rest.isEmpty());
         }
 
-        if (dryRun && statusPictures < 8) {
+        publishStatusBitmap(bitmap);
+    }
+
+    private void publishStatusBitmap(Bitmap bitmap) {
+        if (dryRun && statusPictures < 12) {
             // Nobody sees the panel in a test: its pictures are kept for looking at, in the
             // folder the test has made for them.
             File picture = new File(new File(getFilesDir(), "drystart"),
@@ -797,6 +1125,62 @@ public class MainActivity extends Activity
 
     @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
+        if (isOwnController(event.getDevice())) {
+            // The headset's own controllers are read by the native side, through the
+            // headset's runtime. Should the system pass their buttons this way as well, they
+            // are not counted twice, nor left to what the system makes of a button nobody
+            // took: it takes B for "back", and may pass the menu button on as "back" itself,
+            // either of which would close the app in the middle of the game.
+            int code = event.getKeyCode();
+            boolean back = code == KeyEvent.KEYCODE_BACK || code == KeyEvent.KEYCODE_MENU;
+            if (back && choosingFov) {
+                // (Before the game, backing out of the app is what it has always done.)
+                if (code == KeyEvent.KEYCODE_BACK && event.getAction() == KeyEvent.ACTION_DOWN) {
+                    finish();
+                }
+                return true;
+            }
+            return back || buttonFor(code) != 0 || code == KeyEvent.KEYCODE_BUTTON_MODE
+                    || super.dispatchKeyEvent(event);
+        }
+        // Consume the entire confirming press, including repeats and its release. It must
+        // not press X in the game, or move the player's seat before they have settled in.
+        if (fovConfirmKey != KeyEvent.KEYCODE_UNKNOWN && event.getKeyCode() == fovConfirmKey) {
+            if (event.getAction() == KeyEvent.ACTION_UP) {
+                fovConfirmKey = KeyEvent.KEYCODE_UNKNOWN;
+            }
+            return true;
+        }
+        if (choosingFov) {
+            if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
+                noteInputFrom(event.getDevice());
+                if (isGamepad(event.getDevice())) {
+                    nativeUseController(CONTROLLER_GAMEPAD);
+                }
+                switch (event.getKeyCode()) {
+                    case KeyEvent.KEYCODE_DPAD_LEFT:
+                        adjustFov(-1);
+                        break;
+                    case KeyEvent.KEYCODE_DPAD_RIGHT:
+                        adjustFov(1);
+                        break;
+                    case KeyEvent.KEYCODE_BUTTON_A:
+                    case KeyEvent.KEYCODE_DPAD_CENTER:
+                    case KeyEvent.KEYCODE_ENTER:
+                        if (headsetFov != null) {
+                            fovConfirmKey = event.getKeyCode();
+                            startGame();
+                        }
+                        break;
+                    case KeyEvent.KEYCODE_BACK:
+                        finish();
+                        break;
+                    default:
+                        break;
+                }
+            }
+            return true;
+        }
         if (event.getKeyCode() == KeyEvent.KEYCODE_BUTTON_MODE) {
             // The PS button resets the view: where the head is now is where the player sits,
             // the way they face is straight ahead, and so is the way the controller points
@@ -807,31 +1191,24 @@ public class MainActivity extends Activity
             }
             return true;
         }
-        int button = buttonFor(event.getKeyCode());
+        int keyCode = event.getKeyCode();
+        if (keyCode == KeyEvent.KEYCODE_BACK && isGamepad(event.getDevice())) {
+            // Some gamepads have the system take their Back / View button for its own "back",
+            // which would close the app in the middle of the game: it is the button that
+            // presses the touchpad, as on every other gamepad.
+            keyCode = KeyEvent.KEYCODE_BUTTON_SELECT;
+        }
+        int button = buttonFor(keyCode);
         if (button == 0) {
             return super.dispatchKeyEvent(event);
         }
+        // (What the buttons mean about the view besides - the first press of X takes the
+        // player's seat, OPTIONS held for a second resets the view - the native side sees
+        // to, for whichever controller the game is played with.)
         if (event.getAction() == KeyEvent.ACTION_DOWN) {
             noteInputFrom(event.getDevice());
-            if (button == CROSS && !seatTaken) {
-                // The first press of X is the player settled in, controller in hand, looking
-                // at the game: that, and not where they were when the app started, is their
-                // seat.
-                seatTaken = true;
-                logInfo("first press of X: the player's seat is where they are now");
-                nativeRecenter(RECENTER_SEAT);
-            }
-            if (button == OPTIONS && event.getRepeatCount() == 0) {
-                // What a PlayStation VR does when OPTIONS is held, and what the game tells its
-                // players to do when the view is off. The game still sees the button.
-                handler.removeCallbacks(optionsHeld);
-                handler.postDelayed(optionsHeld, OPTIONS_HOLD_MS);
-            }
             keyButtons |= button;
         } else if (event.getAction() == KeyEvent.ACTION_UP) {
-            if (button == OPTIONS) {
-                handler.removeCallbacks(optionsHeld);
-            }
             keyButtons &= ~button;
         }
         sendInput();
@@ -846,14 +1223,68 @@ public class MainActivity extends Activity
         return range != null && Math.abs(value) <= range.getFlat() ? 0.0f : value;
     }
 
+    /**
+     * Where a gamepad has its right stick and whether its triggers say how far they are
+     * pulled: most gamepads agree on that, the others are met half way.
+     */
+    private void learnAxes(InputDevice device) {
+        if (device == null || device.getId() == axesDevice) {
+            return;
+        }
+        axesDevice = device.getId();
+        boolean standard = hasAxis(device, MotionEvent.AXIS_Z)
+                && hasAxis(device, MotionEvent.AXIS_RZ);
+        boolean other = hasAxis(device, MotionEvent.AXIS_RX)
+                && hasAxis(device, MotionEvent.AXIS_RY);
+        rightXAxis = standard || !other ? MotionEvent.AXIS_Z : MotionEvent.AXIS_RX;
+        rightYAxis = standard || !other ? MotionEvent.AXIS_RZ : MotionEvent.AXIS_RY;
+        analogTriggers = hasAxis(device, MotionEvent.AXIS_LTRIGGER)
+                || hasAxis(device, MotionEvent.AXIS_BRAKE)
+                || hasAxis(device, MotionEvent.AXIS_RTRIGGER)
+                || hasAxis(device, MotionEvent.AXIS_GAS);
+        if (!standard || !analogTriggers) {
+            logInfo("this gamepad: right stick on " + MotionEvent.axisToString(rightXAxis) + " and "
+                    + MotionEvent.axisToString(rightYAxis) + ", triggers "
+                    + (analogTriggers ? "by how far they are pulled" : "as buttons only"));
+        }
+    }
+
+    private static boolean hasAxis(InputDevice device, int axis) {
+        return device.getMotionRange(axis, InputDevice.SOURCE_JOYSTICK) != null;
+    }
+
     @Override
     public boolean dispatchGenericMotionEvent(MotionEvent event) {
+        if (isOwnController(event.getDevice())) {
+            // Read by the native side, see dispatchKeyEvent.
+            return true;
+        }
+        if (choosingFov) {
+            if (event.isFromSource(InputDevice.SOURCE_JOYSTICK)
+                    && event.getAction() == MotionEvent.ACTION_MOVE) {
+                noteInputFrom(event.getDevice());
+                float x = axis(event, MotionEvent.AXIS_X);
+                float hatX = event.getAxisValue(MotionEvent.AXIS_HAT_X);
+                int direction = x < -0.55f || hatX < -0.5f ? -1
+                        : x > 0.55f || hatX > 0.5f ? 1 : 0;
+                long now = SystemClock.uptimeMillis();
+                if (direction == 0) {
+                    nextFovMoveAt = 0;
+                } else if (now >= nextFovMoveAt) {
+                    nativeUseController(CONTROLLER_GAMEPAD);
+                    adjustFov(direction);
+                    nextFovMoveAt = now + 250;
+                }
+            }
+            return true;
+        }
         if (event.isFromSource(InputDevice.SOURCE_JOYSTICK)
                 && event.getAction() == MotionEvent.ACTION_MOVE) {
+            learnAxes(event.getDevice());
             leftX = axis(event, MotionEvent.AXIS_X);
             leftY = axis(event, MotionEvent.AXIS_Y);
-            rightX = axis(event, MotionEvent.AXIS_Z);
-            rightY = axis(event, MotionEvent.AXIS_RZ);
+            rightX = axis(event, rightXAxis);
+            rightY = axis(event, rightYAxis);
             leftTrigger = Math.max(event.getAxisValue(MotionEvent.AXIS_LTRIGGER),
                     event.getAxisValue(MotionEvent.AXIS_BRAKE));
             rightTrigger = Math.max(event.getAxisValue(MotionEvent.AXIS_RTRIGGER),
@@ -905,53 +1336,55 @@ public class MainActivity extends Activity
         return true;
     }
 
-    private static int stick(float value) {
-        return Math.max(0, Math.min(255, Math.round(128.0f + value * 127.0f)));
-    }
-
+    /**
+     * Hands what the gamepad says to the native side as it is. What a gamepad lacks is made
+     * up for there, the same way for every controller: the right stick as a finger on the
+     * touchpad (unless stick_touchpad=0), a finger in the pad's middle for a button that
+     * presses it.
+     */
     private void sendInput() {
-        int buttons = keyButtons | hatButtons | triggerButtons | (padTouchClick ? TOUCHPAD : 0);
-
-        boolean touchDown = padTouchDown;
-        float touchX = padTouchX, touchY = padTouchY;
-        if (!touchDown && stickTouchpad) {
-            // This title has no use for the right stick, while several of its gadgets want
-            // swipes: the stick moves a finger that touches down at the pad's centre.
-            float deflection = (float) Math.hypot(rightX, rightY);
-            if (deflection > 0.25f) {
-                touchDown = true;
-                touchX = 0.5f + rightX * 0.45f;
-                touchY = 0.5f + rightY * 0.45f;
-            }
+        if (choosingFov) {
+            return;
         }
-
-        nativeInput(buttons, stick(leftX), stick(leftY), stick(rightX), stick(rightY),
-                Math.round(Math.max(0.0f, Math.min(1.0f, leftTrigger)) * 255.0f),
-                Math.round(Math.max(0.0f, Math.min(1.0f, rightTrigger)) * 255.0f), touchDown,
-                Math.max(0, Math.min(TOUCH_WIDTH - 1, Math.round(touchX * (TOUCH_WIDTH - 1)))),
-                Math.max(0, Math.min(TOUCH_HEIGHT - 1, Math.round(touchY * (TOUCH_HEIGHT - 1)))));
+        int buttons = keyButtons | hatButtons | triggerButtons | (padTouchClick ? TOUCHPAD : 0);
+        float left = leftTrigger, right = rightTrigger;
+        if (!analogTriggers) {
+            // Triggers that are only buttons are pulled all the way or not at all.
+            left = (keyButtons & L2) != 0 ? 1.0f : 0.0f;
+            right = (keyButtons & R2) != 0 ? 1.0f : 0.0f;
+        }
+        nativeInput(buttons, leftX, leftY, rightX, rightY, left, right, padTouchDown, padTouchX,
+                padTouchY);
     }
 
     // --- controller: the device, its motion sensors, rumble and light ----------------------------
 
+    /**
+     * The headset's own controllers, which the system lists as gamepads too (and first, when
+     * the app was started with one of them). They are no gamepad here: this way they come
+     * without where they are, without rumble and without telling whether anybody holds them.
+     * The native side reads them through the headset's runtime, which has all of that.
+     */
+    private static boolean isOwnController(InputDevice device) {
+        return device != null && device.getVendorId() == VENDOR_META
+                && device.supportsSource(InputDevice.SOURCE_GAMEPAD);
+    }
+
     private static boolean isGamepad(InputDevice device) {
-        return device != null && !device.isVirtual()
+        return device != null && !device.isVirtual() && !isOwnController(device)
                 && device.supportsSource(InputDevice.SOURCE_GAMEPAD)
                 && device.supportsSource(InputDevice.SOURCE_JOYSTICK);
     }
 
     /**
-     * How much a device looks like the controller the game is played with. The headset's own
-     * controllers also show up as gamepads (and come first in the list when the app was started
-     * with one of them): a controller from the console's maker goes before anything else, the
-     * headset's own after everything else, and motion sensors and motors count for the rest.
+     * How much a device looks like the controller the game was made for, where more than one
+     * gamepad is there: a controller from the console's maker goes before anything else, and
+     * motion sensors and motors count for the rest.
      */
     private int rank(InputDevice device) {
         int rank = 0;
         if (device.getVendorId() == VENDOR_SONY) {
             rank += 8;
-        } else if (device.getVendorId() == VENDOR_META) {
-            rank -= 8;
         }
         try {
             if (findSensors(device) != null) {
@@ -1010,9 +1443,20 @@ public class MainActivity extends Activity
                 + ", product " + device.getProductId() + ", sources 0x"
                 + Integer.toHexString(device.getSources()) + ")");
 
+        learnAxes(device);
+        nativeSetGamepad(true, device.supportsSource(InputDevice.SOURCE_TOUCHPAD));
+
         // Every part is optional: what a controller offers depends on it and on the system.
         try {
             SensorManager sensors = motion ? findSensors(device) : null;
+            if (sensors != null && device.getVendorId() != VENDOR_SONY) {
+                // Which way is up for a motion sensor is each maker's own affair, and only
+                // this one's is known here. A gamepad turned the wrong way round in the game
+                // is worse than one the hands holding it turn.
+                logInfo("this gamepad has motion sensors, which are not used: only for "
+                        + "PlayStation controllers is it known which way theirs point");
+                sensors = null;
+            }
             if (sensors != null) {
                 sensors.registerListener(this, sensors.getDefaultSensor(Sensor.TYPE_ACCELEROMETER),
                         SensorManager.SENSOR_DELAY_FASTEST);
@@ -1045,7 +1489,8 @@ public class MainActivity extends Activity
         }
         logInfo("controller offers: motion " + (controllerSensors != null) + ", rumble "
                 + (controllerVibrators != null) + ", light bar " + (lightBar != null)
-                + ", touchpad " + device.supportsSource(InputDevice.SOURCE_TOUCHPAD));
+                + ", touchpad " + device.supportsSource(InputDevice.SOURCE_TOUCHPAD)
+                + ", analog triggers " + analogTriggers);
         shownFeedback = -1;
     }
 
@@ -1104,6 +1549,11 @@ public class MainActivity extends Activity
     /** Carries out what the game last asked of the controller: rumble and light bar colour. */
     private void applyFeedback() {
         long feedback = nativePadFeedback();
+        if ((nativeController() & CONTROLLER_WHICH) != CONTROLLER_GAMEPAD) {
+            // The game is played with the headset's own controllers, which the native side
+            // shakes: a gamepad lying about has no business rattling.
+            feedback &= ~0xffffL;
+        }
         long now = android.os.SystemClock.uptimeMillis();
         int small = (int) (feedback & 0xff);
         int large = (int) ((feedback >> 8) & 0xff);
@@ -1183,7 +1633,8 @@ public class MainActivity extends Activity
 
     /** The motion sensors of a controller may be listed a moment after the controller. */
     private void adoptLateSensors() {
-        if (gamepad == null || controllerSensors != null || !motion) {
+        if (gamepad == null || controllerSensors != null || !motion
+                || gamepad.getVendorId() != VENDOR_SONY) {
             return;
         }
         InputDevice device = getSystemService(InputManager.class).getInputDevice(gamepad.getId());
@@ -1207,6 +1658,10 @@ public class MainActivity extends Activity
             padTouchClick = false;
             sendInput();
             findGamepad();
+            if (gamepad == null) {
+                // The headset's own controllers play on, if the player picks them up.
+                nativeSetGamepad(false, false);
+            }
         }
     }
 

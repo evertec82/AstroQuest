@@ -5,6 +5,7 @@
 #include "common/logging/log.h"
 #include "common/singleton.h"
 #include "core/emulator_settings.h"
+#include "core/known_title.h"
 #include "core/libraries/libs.h"
 #include "core/libraries/pad/pad_errors.h"
 #include "core/user_settings.h"
@@ -535,11 +536,36 @@ int ProcessStates(s32 handle, OrbisPadData* pData, Input::GameController& contro
         pData[i].deviceUniqueDataLen = 0;
     }
 
+    // SHADPS4_PAD_TOUCH_TRACE=1: what the title is given of the touchpad, read by read, for
+    // as long as a finger is on it or the pad is pressed. A title makes its swipes and pulls
+    // of what it finds at each of its reads (the newest of the states it is handed), which
+    // is not what the finger did but what was seen of it: this says what was.
+    static const bool touch_trace = [] {
+        const char* value = std::getenv("SHADPS4_PAD_TOUCH_TRACE");
+        return value != nullptr && value[0] == '1';
+    }();
+    if (touch_trace && num > 0 && handle == 1) {
+        static bool was_busy = false;
+        static u64 reads = 0;
+        const OrbisPadData& last = pData[num - 1];
+        const bool down = last.touchData.touchNum != 0;
+        const bool pressed = True(last.buttons & OrbisPadButtonDataOffset::TouchPad);
+        ++reads;
+        if (down || pressed || was_busy) {
+            LOG_INFO(Lib_Pad, "touch trace: read {} at {} ms, {} states: finger {} at {} {}, pad {}",
+                     reads, last.timestamp / 1000, num, down ? "down" : "up",
+                     last.touchData.touch[0].x, last.touchData.touch[0].y,
+                     pressed ? "pressed" : "not pressed");
+        }
+        was_busy = down || pressed;
+    }
+
     return num;
 }
 
 int PS4_SYSV_ABI scePadRead(s32 handle, OrbisPadData* pData, s32 num) {
     LOG_TRACE(Lib_Pad, "called");
+    Core::KnownTitle::OnControllerRead();
     handle = EnsurePadHandle(handle);
     int connected_count = 0;
     bool connected = false;
@@ -580,6 +606,7 @@ int PS4_SYSV_ABI scePadReadState(s32 handle, OrbisPadData* pData) {
         LOG_INFO(Lib_Pad, "handle: {}", handle);
         logged_once = true;
     }
+    Core::KnownTitle::OnControllerRead();
     handle = EnsurePadHandle(handle);
     auto it = handle_to_controller_map.find(handle);
     if (it == handle_to_controller_map.end()) {

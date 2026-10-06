@@ -57,13 +57,28 @@
 # 0: the right stick no longer doubles as a finger on the touchpad.
 #stick_touchpad=1
 
-# 0: the headset's own controllers never stand in for a gamepad. (They only do while no gamepad
-# is connected to the PC.)
+# Makes what the microphone hears that many times louder for the game (0.1 to 30), for when
+# blowing does too little. The launcher's window shows how loud the game hears things, and
+# what it takes for blowing. (Holding the PS button and square blows without a microphone.)
+#mic_gain=1
+
+# 0: the headset's own controllers never stand in for a gamepad. (Otherwise they play while no
+# gamepad is connected to the PC, and with one whenever they were used after it.)
 #controllers=1
 
 # Which of the headset's controllers is the controller in the game while they stand in for a
 # gamepad: right or left.
 #controller_hand=right
+
+# The language the game is played in, as Windows names languages (fr-FR, de-DE, pt-BR, ja-JP
+# ...). windows: the one Windows is shown in. The game has 28 languages and is in English
+# for any other. The launcher's window has the list.
+#language=windows
+
+# How many degrees the view turns when L1 (the headset's controllers: the left grip) is held
+# and the right stick flicked to a side, for those who cannot turn round where they sit.
+# 0: never.
+#turn=30
 
 # 0: the game's surround sound is folded down to left and right instead of being rendered for
 # the headset's speakers.

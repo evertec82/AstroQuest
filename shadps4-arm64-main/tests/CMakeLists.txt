@@ -133,6 +133,7 @@ set(GCN_TEST_SOURCES
 
     # Tests
     gcn/test_gcn_instructions.cpp
+    gcn/test_geometry_inputs.cpp
     gcn/test_image_host_view.cpp
     gcn/test_pm4_stall_log.cpp
 
@@ -195,6 +196,8 @@ target_link_libraries(shadps4_gcn_test PRIVATE
     toml11::toml11
     Boost::headers
     Vulkan::Headers
+    tsl::robin_map
+    GPUOpen::VulkanMemoryAllocator
     sirit
     SDL3::SDL3
     spdlog::spdlog

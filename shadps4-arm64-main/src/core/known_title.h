@@ -10,7 +10,8 @@ struct Vec3;
 }
 
 /// What is known about the inner workings of particular titles, and what the emulator does with
-/// it. Everything here applies to one exact build of one title and does nothing for any other.
+/// it. Everything here applies to exact builds of one title, told apart by what their images
+/// hold when loaded (known_title_builds.h), and does nothing for any other title or build.
 ///
 /// Astro Bot Rescue Mission (CUSA12392):
 ///  - It advances its world by one sixtieth of a second for every frame it draws, however long
@@ -21,6 +22,10 @@ struct Vec3;
 ///    frame, with what frames really take: the game then runs by the clock.
 ///  - Its tracking manager keeps the point it counts head positions from, and the position
 ///    counted from it, which is what a view that is off shows up in.
+///  - It moves the collisions of what moves by a speed worked out with one frame's time step
+///    and applied for the next frame's: the same thing on the console, not with a time step
+///    that follows the frames. Its physics are changed to step with the time step the bodies
+///    were moved for (known_title_builds.h, PhysicsStepChanges).
 namespace Core::KnownTitle {
 
 /// Called when the title has handed in a frame (sceGnmSubmitDone): sets the title's time step
@@ -42,13 +47,20 @@ u32 FramePace();
 /// the log every now and then, and whenever the title takes stock of the player's seat anew.
 void NoteView(const Vr::Vec3& tracker_head);
 
+/// Called when the title reads its controller, which it does once a frame on the thread it
+/// runs on. SHADPS4_TITLE_PHYSICS_WATCH=1 has the log tell whether the collisions the title
+/// moves arrive where it sends them.
+void OnControllerRead();
+
 /// Called once the title is known and before its memory is set up. A title that is to draw
 /// larger pictures than on the console (SHADPS4_TITLE_EYE_WIDTH=<pixels>, the width of the
 /// largest, 1440 on the console) needs more memory than the console has.
 void Prepare();
 
 /// Called when the title's executable is in memory, before any of it runs: the sizes the title
-/// draws at, and the memory it sets aside for that, are written into it where they are larger.
+/// draws at, and the memory it sets aside for that, are written into it where they are larger,
+/// and its physics are made to take each step with the time step its bodies were moved for
+/// (SHADPS4_TITLE_PHYSICS_STEP=0 leaves them as the console has them).
 void OnGameLoaded(VAddr base, u64 size);
 
 } // namespace Core::KnownTitle

@@ -1017,6 +1017,7 @@ set(CORE src/core/aerolib/stubs.cpp
           src/core/guest_cpu/guest_watchdog.h
           src/core/known_title.cpp
           src/core/known_title.h
+          src/core/known_title_builds.h
           src/core/linker.cpp
          src/core/linker.h
          src/core/memory.cpp
@@ -1295,6 +1296,7 @@ set(IMGUI src/imgui/imgui_config.h
 
 set(INPUT src/input/controller.cpp
           src/input/controller.h
+          src/input/stick_finger.h
           src/input/input_handler.cpp
           src/input/input_handler.h
           src/input/input_mouse.cpp

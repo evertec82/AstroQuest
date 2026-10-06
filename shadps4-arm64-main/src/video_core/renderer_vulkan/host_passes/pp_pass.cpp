@@ -277,7 +277,7 @@ void PostProcessingPass::Render(vk::CommandBuffer cmdbuf, std::span<const Region
                                   .minDepth = 0.0f,
                                   .maxDepth = 1.0f,
                               });
-        cmdbuf.setScissor(0, region.area);
+        cmdbuf.setScissor(0, region.clip.value_or(region.area));
 
         if (uses_push_descriptors) {
             const vk::DescriptorImageInfo image_info{

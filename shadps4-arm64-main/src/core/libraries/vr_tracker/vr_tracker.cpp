@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <mutex>
 #include <optional>
@@ -63,6 +64,40 @@ static bool IsPlayersPad(s32 handle) {
 
 static bool HeadsetConnected() {
     return Core::Vr::Runtime::Instance().IsHeadsetConnected();
+}
+
+// Asked to find a kind of device anew (sceVrTrackerRecalibrate), a console's tracker says for
+// a moment that it is calibrating it, and then that it tracks it again. Titles wait for exactly
+// that: ASTRO BOT Rescue Mission from its version 1.01 on asks for its controller to be found
+// anew on the screen that has the player sit inside a silhouette, and stays there until it has
+// seen the controller's status go from calibrating to anything else.
+struct Recalibration {
+    /// Process time, in microseconds, up to which the devices count as being calibrated.
+    u64 until{};
+    /// Whether a result has said so yet: the title must get to see it, however late it asks.
+    bool reported{true};
+};
+static constexpr u64 RecalibrationTime = 200'000;
+static std::array<Recalibration, 4> g_recalibrations;
+static std::mutex g_recalibrations_mutex;
+
+static void BeginRecalibration(OrbisVrTrackerDeviceType device_type) {
+    std::scoped_lock lock{g_recalibrations_mutex};
+    g_recalibrations[device_type] = {
+        .until = Libraries::Kernel::sceKernelGetProcessTime() + RecalibrationTime,
+        .reported = false,
+    };
+}
+
+/// Whether a result for a device of this kind is to say that it is being calibrated.
+static bool IsRecalibrating(OrbisVrTrackerDeviceType device_type, u64 now) {
+    std::scoped_lock lock{g_recalibrations_mutex};
+    Recalibration& recalibration = g_recalibrations[device_type];
+    if (recalibration.reported && now >= recalibration.until) {
+        return false;
+    }
+    recalibration.reported = true;
+    return true;
 }
 
 static void WritePose(OrbisVrTrackerPoseData& out, const Core::Vr::Pose& pose) {
@@ -357,7 +392,12 @@ s32 PS4_SYSV_ABI sceVrTrackerGetResult(const OrbisVrTrackerGetResultParam* param
         OrbisVrTrackerPlayareaBrightnessRiskType::ORBIS_VR_TRACKER_PLAYAREA_BRIGHTNESS_RISK_LOW;
     result->led_color = is_pad ? pad_registration->color
                                : OrbisVrTrackerLedColor::ORBIS_VR_TRACKER_LED_COLOR_BLUE;
-    result->status = OrbisVrTrackerStatus::ORBIS_VR_TRACKER_STATUS_TRACKING;
+    result->status =
+        IsRecalibrating(is_hmd ? OrbisVrTrackerDeviceType::ORBIS_VR_TRACKER_DEVICE_HMD
+                               : OrbisVrTrackerDeviceType::ORBIS_VR_TRACKER_DEVICE_DUALSHOCK4,
+                        now)
+            ? OrbisVrTrackerStatus::ORBIS_VR_TRACKER_STATUS_CALIBRATING
+            : OrbisVrTrackerStatus::ORBIS_VR_TRACKER_STATUS_TRACKING;
     result->position_quality = OrbisVrTrackerQuality::ORBIS_VR_TRACKER_QUALITY_FULL;
     result->orientation_quality = OrbisVrTrackerQuality::ORBIS_VR_TRACKER_QUALITY_FULL;
     result->velocity_x = state.linear_velocity.x;
@@ -458,7 +498,7 @@ sceVrTrackerNotifyEndOfCpuProcess(const OrbisVrTrackerNotifyEndOfCpuProcessParam
 }
 
 s32 PS4_SYSV_ABI sceVrTrackerRecalibrate(const OrbisVrTrackerRecalibrateParam* param) {
-    LOG_ERROR(Lib_VrTracker, "(STUBBED) called");
+    LOG_TRACE(Lib_VrTracker, "called");
     if (!g_library_initialized) {
         return ORBIS_VR_TRACKER_ERROR_NOT_INIT;
     }
@@ -501,7 +541,11 @@ s32 PS4_SYSV_ABI sceVrTrackerRecalibrate(const OrbisVrTrackerRecalibrateParam* p
     }
     }
 
-    // TODO: handle internal recalibration behaviors.
+    // The host tracks the devices and has nothing to find anew; what the title gets is the
+    // status a console's tracker shows while it does.
+    LOG_INFO(Lib_VrTracker, "called, device_type = {}, calibration_type = {}",
+             static_cast<u32>(device_type), static_cast<u32>(param->calibration_type));
+    BeginRecalibration(device_type);
     return ORBIS_OK;
 }
 

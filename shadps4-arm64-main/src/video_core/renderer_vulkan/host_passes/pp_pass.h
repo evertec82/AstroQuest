@@ -35,6 +35,7 @@ public:
     struct Region {
         vk::ImageView input;
         vk::Rect2D area;
+        std::optional<vk::Rect2D> clip;
     };
 
     // Frame marker: a row of black and white blocks stamped along the top-left edge of a frame.

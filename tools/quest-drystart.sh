@@ -16,7 +16,9 @@ root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 ADB="$LOCALAPPDATA/Android/Sdk/platform-tools/adb.exe"
 export ANDROID_SERIAL=${ANDROID_SERIAL:-$(cat "$(dirname "${BASH_SOURCE[0]}")/quest-serial.local" 2>/dev/null)}
 export MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*'
-package=com.astrobotquest.vrhost
+# (ASTRO_PACKAGE: the build made by quest-host/build.sh --test-package, if that is the
+# one to run.)
+package=${ASTRO_PACKAGE:-com.astrobotquest.vrhost}
 seconds=${1:-60}
 out="$root/build/quest/drystart"
 files=/sdcard/Android/data/$package/files
@@ -27,7 +29,7 @@ if [ -n "${2:-}" ]; then
   "$ADB" shell "chmod 644 /data/local/tmp/astro/vrhost-test.txt"
   settings="-e settings /data/local/tmp/astro/vrhost-test.txt"
 fi
-"$ADB" shell "am instrument -w -e drystart $seconds $settings $package/.SandboxShell" > /dev/null
+"$ADB" shell "am instrument -w -e drystart $seconds $settings $package/com.astrobotquest.vrhost.SandboxShell" > /dev/null
 mkdir -p "$out"
 for name in host.log core.log; do
   # (Not "adb pull": with path conversion off, adb.exe is given a path it cannot write to.)
@@ -35,7 +37,7 @@ for name in host.log core.log; do
   [ -s "$out/$name" ] || echo "no $name"
 done
 # The pictures of the status panel, as the activity drew them.
-for number in 0 1 2 3 4 5 6 7; do
+for number in 0 1 2 3 4 5 6 7 8 9 10 11; do
   "$ADB" exec-out "run-as $package cat files/drystart/status-$number.png" \
     > "$out/status-$number.png" 2>/dev/null
   [ -s "$out/status-$number.png" ] || rm -f "$out/status-$number.png"

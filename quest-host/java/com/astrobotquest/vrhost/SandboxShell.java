@@ -157,7 +157,15 @@ public class SandboxShell extends Instrumentation {
                         : step == 110 ? -KeyEvent.KEYCODE_BUTTON_START
                         : step == 114 ? KeyEvent.KEYCODE_BUTTON_MODE
                         : step == 115 ? -KeyEvent.KEYCODE_BUTTON_MODE : 0;
-                if (reset == 0 && (step < 80 || (phase != 0 && phase != 1 && phase != 10))) {
+                // Once, what a gamepad without a touchpad does about the touchpad: the right
+                // stick pulled back for most of a second and let go (the finger it moves),
+                // and R1 (which swipes forward). With env=SHADPS4_PAD_TOUCH_TRACE=1 among the
+                // settings, core.log says what the game was given of both.
+                final int gesture = step == 122 ? 1 : step == 125 ? 2
+                        : step == 128 ? KeyEvent.KEYCODE_BUTTON_R1
+                        : step == 129 ? -KeyEvent.KEYCODE_BUTTON_R1 : 0;
+                if (reset == 0 && gesture == 0
+                        && (step < 80 || (phase != 0 && phase != 1 && phase != 10))) {
                     continue;
                 }
                 runOnMainSync(() -> {
@@ -166,8 +174,16 @@ public class SandboxShell extends Instrumentation {
                             activity[0].dispatchKeyEvent(new KeyEvent(
                                     reset > 0 ? KeyEvent.ACTION_DOWN : KeyEvent.ACTION_UP,
                                     Math.abs(reset)));
+                        } else if (gesture == 1 || gesture == 2) {
+                            activity[0].dispatchGenericMotionEvent(
+                                    stickEvent(0.0f, 0.0f, 0.0f, gesture == 1 ? 1.0f : 0.0f));
+                        } else if (gesture != 0) {
+                            activity[0].dispatchKeyEvent(new KeyEvent(
+                                    gesture > 0 ? KeyEvent.ACTION_DOWN : KeyEvent.ACTION_UP,
+                                    Math.abs(gesture)));
                         } else if (phase == 10) {
-                            activity[0].dispatchGenericMotionEvent(stickEvent(0.5f, -0.25f));
+                            activity[0].dispatchGenericMotionEvent(
+                                    stickEvent(0.5f, -0.25f, 0.0f, 0.0f));
                         } else {
                             activity[0].dispatchKeyEvent(new KeyEvent(
                                     phase == 0 ? KeyEvent.ACTION_DOWN : KeyEvent.ACTION_UP,
@@ -207,13 +223,15 @@ public class SandboxShell extends Instrumentation {
         return report.toString();
     }
 
-    /** What a gamepad reports when its left stick is moved. */
-    private static MotionEvent stickEvent(float x, float y) {
+    /** What a gamepad reports when its sticks are moved: the left one, the right one. */
+    private static MotionEvent stickEvent(float x, float y, float rightX, float rightY) {
         MotionEvent.PointerProperties[] properties = {new MotionEvent.PointerProperties()};
         properties[0].id = 0;
         MotionEvent.PointerCoords[] coords = {new MotionEvent.PointerCoords()};
         coords[0].setAxisValue(MotionEvent.AXIS_X, x);
         coords[0].setAxisValue(MotionEvent.AXIS_Y, y);
+        coords[0].setAxisValue(MotionEvent.AXIS_Z, rightX);
+        coords[0].setAxisValue(MotionEvent.AXIS_RZ, rightY);
         long now = SystemClock.uptimeMillis();
         return MotionEvent.obtain(now, now, MotionEvent.ACTION_MOVE, 1, properties, coords, 0, 0,
                 1.0f, 1.0f, 0, 0, InputDevice.SOURCE_JOYSTICK, 0);

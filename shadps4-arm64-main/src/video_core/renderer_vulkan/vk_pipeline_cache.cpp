@@ -454,6 +454,18 @@ bool PipelineCache::RefreshGraphicsKey() {
         return false;
     }
 
+    // Targets this pass of a draw leaves out (LeaveTargetsOut): the shaders are the ones of
+    // the whole draw, what they write there goes nowhere.
+    if (targets_left_out != 0) {
+        key.mrt_mask &= ~targets_left_out;
+        key.num_color_attachments = std::bit_width(key.mrt_mask);
+        for (s32 cb = 0; cb < AmdGpu::NUM_COLOR_BUFFERS; ++cb) {
+            if ((targets_left_out & (1u << cb)) != 0) {
+                std::memset(&key.color_buffers[cb], 0, sizeof(Shader::PsColorBuffer));
+            }
+        }
+    }
+
     // Second pass to mask out render targets not written by shader and fill remaining info
     u8 color_samples = 0;
     bool all_color_samples_same = true;

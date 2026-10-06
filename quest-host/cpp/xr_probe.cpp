@@ -22,6 +22,7 @@
 
 #include "core_process.h"
 #include "gl_frames.h"
+#include "pad_router.h"
 #include "xr_host.h"
 
 #define XR_USE_PLATFORM_ANDROID
@@ -77,6 +78,7 @@ extern "C" JNIEXPORT jstring JNICALL Java_com_astrobotquest_vrhost_SandboxShell_
         // The host as the app runs it, with no emulator behind it and nobody to show a session
         // to: it sets itself up, waits for a session that does not come, and is told to stop.
         CoreProcess core;
+        PadRouter pads;
         StatusImage status;
         XrHostOptions options;
         options.probe = true;
@@ -87,7 +89,8 @@ extern "C" JNIEXPORT jstring JNICALL Java_com_astrobotquest_vrhost_SandboxShell_
             std::this_thread::sleep_for(std::chrono::seconds{5});
             quit = true;
         }};
-        RunXrHost(vm, context, core, status, options, host_status, quit, recenter_requests);
+        RunXrHost(vm, context, core, pads, status, options, host_status, quit,
+                  recenter_requests);
         stopper.join();
         note("the host ran and stopped: session %s, refresh rate %.0f Hz",
              host_status.session_running ? "running" : "not running",

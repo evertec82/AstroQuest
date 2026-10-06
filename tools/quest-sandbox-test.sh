@@ -39,7 +39,9 @@ ADB="$LOCALAPPDATA/Android/Sdk/platform-tools/adb.exe"
 # The headset also shows up over the network once wireless debugging has been used: name the
 # USB connection so that adb does not have to guess.
 export ANDROID_SERIAL=${ANDROID_SERIAL:-$(cat "$(dirname "${BASH_SOURCE[0]}")/quest-serial.local" 2>/dev/null)}
-package=com.astrobotquest.vrhost
+# (ASTRO_PACKAGE: the build made by quest-host/build.sh --test-package, if that is the
+# one to run.)
+package=${ASTRO_PACKAGE:-com.astrobotquest.vrhost}
 stage=/data/local/tmp/astro
 game=${ASTRO_GAME:-$stage/games/CUSA12392/eboot.bin}
 driver=${ASTRO_DRIVER:-runtime/drivers/turnip}
@@ -147,7 +149,7 @@ tail -c 2000 core.log
   echo "$(( $(date +%s) - start )) $(cat /sys/class/kgsl/kgsl-3d0/gpu_busy_percentage | tr -d " %") $(( $(cat /sys/class/kgsl/kgsl-3d0/gpuclk) / 1000000 )) $(( $(cat /sys/class/kgsl/kgsl-3d0/temp) / 1000 )) $(cat /sys/devices/system/cpu/cpu*/cpufreq/scaling_cur_freq | while read f; do printf "%s " $(( f / 1000 )); done)"
   sleep 5; done' > build/quest/run/gpu.txt 2>&1 &
 sampler=$!
-"$ADB" shell "am instrument -w -e cmd '$command' $package/.SandboxShell" > build/quest/run/instrument.txt 2>&1
+"$ADB" shell "am instrument -w -e cmd '$command' $package/com.astrobotquest.vrhost.SandboxShell" > build/quest/run/instrument.txt 2>&1
 kill $sampler 2>/dev/null
 
 rm -rf build/quest/run/screenshots build/quest/run/log build/quest/run/rt_dump

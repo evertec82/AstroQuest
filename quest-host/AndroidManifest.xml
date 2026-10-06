@@ -7,8 +7,8 @@
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.astrobotquest.vrhost"
-    android:versionCode="13"
-    android:versionName="0.13"
+    android:versionCode="20"
+    android:versionName="0.20"
     android:installLocation="auto">
 
     <uses-sdk
@@ -24,7 +24,8 @@
         android:required="true" />
 
     <!--
-      The game is played with a gamepad. Declaring hand tracking tells Horizon OS that Touch
+      The game is played with a gamepad, held in hands the headset tracks, or with the
+      headset's own controllers. Declaring hand tracking tells Horizon OS that those
       controllers are not needed; without it the launch is blocked by a "controllers required"
       dialog whenever they are asleep.
     -->

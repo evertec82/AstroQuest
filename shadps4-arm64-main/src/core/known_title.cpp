@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -16,11 +17,10 @@
 
 #include "common/elf_info.h"
 #include "common/logging/log.h"
-#include "common/singleton.h"
 #include "core/emulator_settings.h"
 #include "core/known_title.h"
-#include "core/linker.h"
-#include "core/module.h"
+#include "core/known_title_builds.h"
+#include "core/memory.h"
 #include "core/vr/vr_runtime.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 
@@ -30,26 +30,20 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 
-// Astro Bot Rescue Mission, CUSA12392, in the build whose code at SetRecentre reads as below
-// (the function of its tracking manager that asks for the head's position to be taken anew).
-constexpr u64 SetRecentre = 0xc48320;
-constexpr u8 SetRecentreCode[] = {0x40, 0x0f, 0xb6, 0xc6, 0xff, 0xc0, 0x89, 0x07, 0xc3};
+// Astro Bot Rescue Mission, CUSA12392. Where things are in each build of it that is known from
+// inside, and how a build is told from the others, is in known_title_builds.h; what follows is
+// the same in all of them.
+using Builds::Build;
+using Builds::ConsoleSizes;
+using Builds::FirstHeadsetLevel;
+using Builds::LastHeadsetLevel;
 
 // The tracking manager, a singleton: the point it counts positions from, and for the headset
 // the position counted from it.
-constexpr u64 ManagerPointer = 0x2e025a8;
 constexpr u64 ManagerOrigin = 0x6210;
 constexpr u64 ManagerHeadState = 0x6848;
 constexpr u64 StatePosition = 0x10;
 constexpr u64 StatePositionValid = 0x54;
-
-// The engine's frame rate and what it derives from it when the rate is set (its function at
-// 0xe48fd0): the time one frame stands for, in seconds and in microseconds. Everything in the
-// game that moves reads one of the latter two.
-constexpr u64 EngineFrameRate = 0x16688a8;         // double
-constexpr u64 EngineFrameSeconds = 0x16688b0;      // float
-constexpr u64 EngineFrameMicroseconds = 0x16688b8; // u64
-constexpr u64 ImageEnd = EngineFrameMicroseconds + sizeof(u64);
 
 // What sets the size the scene is drawn at, a singleton made when first asked for: the size is
 // one of a list (ConsoleSizes, the first three are for a television), a base (4 on the
@@ -57,47 +51,23 @@ constexpr u64 ImageEnd = EngineFrameMicroseconds + sizeof(u64);
 // highest one by how long it finds the GPU to take over its drawing. It reads that off
 // timestamps which, emulated, tell how long the emulator took to pass the drawing on, not how
 // long the GPU takes over it: left to itself, the game draws large where the GPU is busiest.
-constexpr u64 ResolutionPointer = 0x2dff9e0;
 constexpr u64 ResolutionBase = 0x0;     // s32
 constexpr u64 ResolutionLevel = 0x4;    // s32
 constexpr u64 ResolutionOffset = 0x20;  // s32
 constexpr u64 ResolutionHighest = 0x28; // s32, an offset
 constexpr u64 ResolutionLowest = 0x2c;  // s32, an offset
-constexpr s32 FirstHeadsetLevel = 3;
-constexpr s32 LastHeadsetLevel = 6;
-// The sizes of the list, an eye, as the console has them.
-constexpr std::array<std::array<u32, 2>, 7> ConsoleSizes{{
-    {640, 360}, {1280, 720}, {1920, 1080}, {816, 870}, {960, 1080}, {1200, 1280}, {1440, 1536}}};
 
-// Where the sizes of the headset's list are written down (see Larger): a table of widths, one of
-// heights, the same once more in the switch of the function that makes the scene's targets
-// (heights, then widths), and a table of pixel counts the title's own choice goes by.
-constexpr u64 SizeWidths = 0x12da900;  // u32 [7]
-constexpr u64 SizeHeights = 0x12da920; // u32 [7]
-constexpr std::array<std::array<u64, 2>, 4> SizeSwitch{{
-    {0xf2242f, 0xf22435}, {0xf2240d, 0xf22413}, {0xf22551, 0xf22557}, {0xf2255f, 0xf22565}}};
-constexpr u64 SizePixels = 0x1645048; // u64, 32 bytes apart
-// The pictures handed to the headset, made three pairs at a time: their width and height.
-constexpr std::array<u64, 4> EyeSizes{0xc3fad0, 0xc3fad5, 0xc3fb5c, 0xc3fb61};
-// What the targets are taken from: a pool of 200 MB (its size in two places), a smaller one of
-// 10 MB for what goes with them (in three), and the heap of graphics memory both come from,
-// 872 MB, which the title takes from the console's memory at its start.
-constexpr std::array<u64, 2> TargetPool{0xef8bf7, 0xef8c4d};
-constexpr std::array<u64, 3> SmallPool{0xf22194, 0xf221be, 0xf221dd};
-constexpr u64 GraphicsHeap = 0x1269708; // u64
-constexpr u32 ConsoleTargetPool = 0xc800000;
-constexpr u32 ConsoleSmallPool = 0xa00000;
-constexpr u64 ConsoleGraphicsHeap = 0x36800000;
+/// The build of the title that runs, and where its image starts, from the moment its image is
+/// loaded and found to be one of those known (OnGameLoaded); nullptr for every other title and
+/// every other build.
+std::atomic<const Build*> known_build{nullptr};
+VAddr known_base{};
 
 /// The title drawing larger than it does on the console: every size of the headset's list (and
 /// the pictures handed to the headset) grown by the same factor, and the memory that takes.
 /// SHADPS4_TITLE_EYE_WIDTH=<pixels> is the width of the largest, 1440 on the console.
-struct Larger {
+struct Larger : Builds::Sizes {
     double factor{1.0};
-    std::array<std::array<u32, 2>, 7> sizes{ConsoleSizes};
-    u32 target_pool{ConsoleTargetPool};
-    u32 small_pool{ConsoleSmallPool};
-    u64 graphics_heap{ConsoleGraphicsHeap};
     /// What the console's memory has to grow by for it, in MB.
     s32 extra_memory_mb{};
 };
@@ -124,12 +94,12 @@ const Larger& GetLarger() {
         const auto megabytes = [&](u64 bytes) {
             return (static_cast<u64>(static_cast<double>(bytes) * pixels * 1.1) + MB - 1) / MB * MB;
         };
-        result.target_pool = static_cast<u32>(megabytes(ConsoleTargetPool));
-        result.small_pool = static_cast<u32>(megabytes(ConsoleSmallPool));
-        const u64 growth = (result.target_pool - ConsoleTargetPool) +
-                           (result.small_pool - ConsoleSmallPool) +
+        result.target_pool = static_cast<u32>(megabytes(Builds::ConsoleTargetPool));
+        result.small_pool = static_cast<u32>(megabytes(Builds::ConsoleSmallPool));
+        const u64 growth = (result.target_pool - Builds::ConsoleTargetPool) +
+                           (result.small_pool - Builds::ConsoleSmallPool) +
                            static_cast<u64>(200.0 * MB * (pixels - 1.0));
-        result.graphics_heap = ConsoleGraphicsHeap + growth;
+        result.graphics_heap = Builds::ConsoleGraphicsHeap + growth;
         result.extra_memory_mb = static_cast<s32>((growth + 256 * MB) / (256 * MB) * 256);
         return result;
     }();
@@ -143,30 +113,6 @@ std::string SizeName(s32 level) {
     }
     const auto& size = GetLarger().sizes[level];
     return fmt::format("{}x{}", size[0], size[1]);
-}
-
-/// Where the title's image starts if it is the build described above, 0 otherwise.
-VAddr KnownBase() {
-    static const VAddr base = []() -> VAddr {
-        if (Common::ElfInfo::Instance().GameSerial() != "CUSA12392") {
-            return 0;
-        }
-        const Module* eboot = Common::Singleton<Linker>::Instance()->GetModule(0);
-        if (eboot == nullptr || !eboot->IsValid() ||
-            eboot->aligned_base_size < std::max(ManagerPointer + sizeof(u64), ImageEnd)) {
-            return 0;
-        }
-        const VAddr image = eboot->GetBaseAddress();
-        if (std::memcmp(reinterpret_cast<const void*>(image + SetRecentre), SetRecentreCode,
-                        sizeof(SetRecentreCode)) != 0) {
-            LOG_INFO(Core, "This is another build of CUSA12392 than the one known from inside: "
-                           "it is left to itself");
-            return 0;
-        }
-        LOG_INFO(Core, "CUSA12392 in the build known from inside");
-        return image;
-    }();
-    return base;
 }
 
 template <typename T>
@@ -212,6 +158,12 @@ struct Settings {
     /// The most frames a second wanted, 0 for no such limit: frames are given at least as many
     /// refreshes as keep them to that.
     double fps_cap{};
+
+    /// The title's physics take each step with the time step its bodies were sent with
+    /// (Builds::PhysicsStepChanges): what a time step that changes needs.
+    bool physics_step{true};
+    /// Where the bodies the title moves by hand end up goes to the log (PhysicsWatch).
+    bool physics_watch{false};
 };
 
 const Settings& GetSettings() {
@@ -250,6 +202,14 @@ const Settings& GetSettings() {
             if (cap >= 10.0) {
                 parsed.fps_cap = std::min(cap, 240.0);
             }
+        }
+        // SHADPS4_TITLE_PHYSICS_STEP=0 leaves the title's physics as the console has them;
+        // SHADPS4_TITLE_PHYSICS_WATCH=1 tells in the log where its bodies end up.
+        if (const char* value = std::getenv("SHADPS4_TITLE_PHYSICS_STEP"); value != nullptr) {
+            parsed.physics_step = std::atoi(value) != 0;
+        }
+        if (const char* value = std::getenv("SHADPS4_TITLE_PHYSICS_WATCH"); value != nullptr) {
+            parsed.physics_watch = std::atoi(value) != 0;
         }
         return parsed;
     }();
@@ -606,14 +566,19 @@ private:
 
 // The size the title draws its scene at right now, as an index into ConsoleSizes; -1 when
 /// it has not got that far. Holds it to `wanted` on the way unless that is 0.
-s32 TendResolution(VAddr base, s32 wanted) {
-    const u64 control = Read<u64>(base + ResolutionPointer);
+s32 TendResolution(VAddr base, const Build& build, s32 wanted) {
+    const u64 control = Read<u64>(base + build.resolution_pointer);
     if (control == 0) {
         return -1;
     }
     const s32 level = Read<s32>(control + ResolutionLevel);
+    const s32 base_level = Read<s32>(control + ResolutionBase);
+    if (level < 0 || level > LastHeadsetLevel || base_level < 0 || base_level > LastHeadsetLevel) {
+        // Not what is known of it: looked at, never written to.
+        return -1;
+    }
     if (wanted != 0 && level >= FirstHeadsetLevel) {
-        const s32 offset = wanted - Read<s32>(control + ResolutionBase);
+        const s32 offset = wanted - base_level;
         Write<s32>(control + ResolutionOffset, offset);
         Write<s32>(control + ResolutionHighest, offset);
         Write<s32>(control + ResolutionLowest, offset);
@@ -664,13 +629,164 @@ private:
     double stepped{};
 };
 
+/// Whether the bodies the title moves by hand arrive where it sends them, for the log
+/// (SHADPS4_TITLE_PHYSICS_WATCH=1). A body that is sent somewhere is given the speed that
+/// takes it there in one step, worked out with the time step the library has written down
+/// (Builds::PhysicsStepChanges), and keeps that speed: how far a step moved it, against its
+/// speed times the time step that was written down when it was sent, tells whether it got
+/// there. Looked at when the title reads its controller, once a frame on the thread it runs
+/// on and before anything of the frame has moved: the title sends its bodies and then takes
+/// the step, both after that.
+class PhysicsWatch {
+public:
+    void Look(VAddr base, const Build& build) {
+        namespace Physics = Builds::Physics;
+        std::scoped_lock lock{mutex};
+        auto* const memory = Core::Memory::Instance();
+        const auto there = [&](u64 address, u64 size) {
+            return address != 0 && (address & 3) == 0 && memory->IsValidMapping(address, size);
+        };
+        const u64 game = Read<u64>(base + build.game_pointer);
+        if (!there(game, Physics::GameWorld + 8)) {
+            return;
+        }
+        const u64 world = Read<u64>(game + Physics::GameWorld);
+        if (!there(world, Physics::WorldInner + 8)) {
+            return;
+        }
+        const u64 inner = Read<u64>(world + Physics::WorldInner);
+        if (!there(inner, Physics::InnerScale + 4)) {
+            return;
+        }
+        const u64 library = Read<u64>(inner + Physics::InnerLibrary);
+        if (!there(library, Physics::LibraryTimeStep + 4)) {
+            return;
+        }
+        const u32 count = Read<u32>(library + Physics::LibraryBodyCount);
+        const u64 bodies = Read<u64>(library + Physics::LibraryBodies);
+        const double scale = Read<float>(inner + Physics::InnerScale);
+        const double time_step = Read<float>(library + Physics::LibraryTimeStep);
+        if (count == 0 || count > MostBodies || !there(bodies, count * Physics::BodySize) ||
+            !(scale > 0.0) || !(time_step > 0.0)) {
+            return;
+        }
+        if (bodies != seen_bodies) {
+            // Another world, or another level's.
+            seen_bodies = bodies;
+            seen.clear();
+        }
+        seen.resize(count);
+        bool stepped = false;
+        for (u32 i = 0; i < count; ++i) {
+            const VAddr body = bodies + u64{i} * Physics::BodySize;
+            Seen& was = seen[i];
+            const bool by_hand = Read<u8>(body + Physics::BodyMotion) == Physics::MotionKeyframe;
+            const auto segment = Read<std::array<s32, 3>>(body + Physics::BodySegment);
+            const auto position = Read<std::array<float, 3>>(body + Physics::BodyPosition);
+            if (was.by_hand && by_hand && segment == was.segment && position != was.position) {
+                // It moved: a step was taken since it was last looked at, with the speed it
+                // still has.
+                const auto velocity = Read<std::array<float, 3>>(body + Physics::BodyVelocity);
+                double way = 0.0;
+                double off = 0.0;
+                for (u32 axis = 0; axis < 3; ++axis) {
+                    const double moved = position[axis] - was.position[axis];
+                    const double sent = velocity[axis] * written_down;
+                    way += sent * sent;
+                    off += (moved - sent) * (moved - sent);
+                }
+                way = std::sqrt(way) / scale;
+                off = std::sqrt(off) / scale;
+                // (A body further from where it was sent than it had to go twice over is
+                // another body in the place of the one that was looked at.)
+                if (way > 0.0 && off <= 2.0 * way + 0.01) {
+                    stepped = true;
+                    ++moves;
+                    missed += off > Off ? 1 : 0;
+                    farthest = std::max(farthest, way);
+                    if (off > worst_off) {
+                        worst_off = off;
+                        worst_way = way;
+                    }
+                }
+            }
+            was.by_hand = by_hand;
+            was.segment = segment;
+            was.position = position;
+        }
+        if (stepped && written_down > 0.0) {
+            // How unlike two time steps in a row are, which is what the bodies are off by.
+            most_unlike = std::max(most_unlike, std::abs(time_step / written_down - 1.0));
+        }
+        written_down = time_step;
+    }
+
+    /// What was seen since this was last asked, "" for nothing.
+    std::string TakeSummary() {
+        std::scoped_lock lock{mutex};
+        if (moves == 0) {
+            return {};
+        }
+        std::string summary = fmt::format(
+            "The title's bodies: {} times one was sent somewhere and moved, {:.2f} at the "
+            "farthest; where they ended was {:.4f} from where they were sent at worst (by one "
+            "sent {:.2f}), {} times more than {} away; two time steps in a row were {:.1f}% "
+            "apart at most",
+            moves, farthest, worst_off, worst_way, missed, Off, most_unlike * 100.0);
+        moves = 0;
+        missed = 0;
+        farthest = 0.0;
+        worst_off = 0.0;
+        worst_way = 0.0;
+        most_unlike = 0.0;
+        return summary;
+    }
+
+private:
+    struct Seen {
+        bool by_hand{};
+        std::array<s32, 3> segment{};
+        std::array<float, 3> position{};
+    };
+
+    // More than any level has: a count that is not one.
+    static constexpr u32 MostBodies = 1u << 17;
+    // What counts as not having arrived, in the game's units (a block of a level is about
+    // half of one).
+    static constexpr double Off = 0.01;
+
+    std::mutex mutex;
+    u64 seen_bodies{};
+    std::vector<Seen> seen;
+    /// The library's time step when the bodies were last looked at: what they are sent with
+    /// until the step that follows.
+    double written_down{};
+    u64 moves{};
+    u64 missed{};
+    double farthest{};
+    double worst_off{};
+    double worst_way{};
+    double most_unlike{};
+};
+
+PhysicsWatch physics_watch;
+
 } // namespace
 
-void OnFrameSubmitted() {
-    const VAddr base = KnownBase();
-    if (base == 0) {
+void OnControllerRead() {
+    const Build* const build = known_build.load(std::memory_order_acquire);
+    if (build == nullptr || !GetSettings().physics_watch) {
         return;
     }
+    physics_watch.Look(known_base, *build);
+}
+
+void OnFrameSubmitted() {
+    const Build* const build = known_build.load(std::memory_order_acquire);
+    if (build == nullptr) {
+        return;
+    }
+    const VAddr base = known_base;
     const Settings& settings = GetSettings();
 
     static bool running = false;
@@ -714,7 +830,7 @@ void OnFrameSubmitted() {
         wanted = governor.Level(frame, now, 0);
         break;
     }
-    const s32 resolution = TendResolution(base, wanted);
+    const s32 resolution = TendResolution(base, *build, wanted);
     frame_pace.store(governor.Pace(), std::memory_order_relaxed);
 
     if (settings.time_step) {
@@ -722,9 +838,9 @@ void OnFrameSubmitted() {
         // was made for: a frame for every refresh of a display faster than 60 Hz.
         const double shortest = governor.Pace() == 1 ? 1.0 / 250.0 : Nominal;
         step = time_step.Next(frame, settings.longest_step, shortest);
-        Write<double>(base + EngineFrameRate, 1.0 / step);
-        Write<float>(base + EngineFrameSeconds, static_cast<float>(step));
-        Write<u64>(base + EngineFrameMicroseconds, static_cast<u64>(step * 1e6));
+        Write<double>(base + build->frame_rate, 1.0 / step);
+        Write<float>(base + build->frame_seconds, static_cast<float>(step));
+        Write<u64>(base + build->frame_microseconds, static_cast<u64>(step * 1e6));
     }
 
     if (frame <= Stall) {
@@ -744,6 +860,9 @@ void OnFrameSubmitted() {
                  report_real, 100.0 * Nominal * report_frames / report_real,
                  SizeName(resolution),
                  summary.pace, summary.slot * 1e3, summary.load * 100.0);
+        if (const std::string seen = physics_watch.TakeSummary(); !seen.empty()) {
+            LOG_INFO(Core, "{}", seen);
+        }
         report_time = now;
         report_real = 0.0;
         report_frames = 0;
@@ -770,74 +889,69 @@ void Prepare() {
 }
 
 void OnGameLoaded(VAddr base, u64 size) {
-    if (Common::ElfInfo::Instance().GameSerial() != "CUSA12392" || size < ImageEnd ||
-        std::memcmp(reinterpret_cast<const void*>(base + SetRecentre), SetRecentreCode,
-                    sizeof(SetRecentreCode)) != 0) {
+    if (Common::ElfInfo::Instance().GameSerial() != "CUSA12392") {
         return;
     }
-    const Larger& larger = GetLarger();
-    if (larger.factor == 1.0) {
+    // Asked here and nowhere else: this is the one moment at which the image is as its build
+    // has it. Its sizes may be other ones from here on, and its clock is once it runs.
+    const std::span<u8> image{reinterpret_cast<u8*>(base), static_cast<size_t>(size)};
+    const Build* const build = Builds::Recognise(image);
+    if (build == nullptr) {
+        LOG_WARNING(Core,
+                    "This build of CUSA12392 is none of those known from inside (its versions "
+                    "1.00 and 1.04 are): it is left to itself. It then counts time in frames, "
+                    "which is slow motion wherever a frame takes longer than a sixtieth of a "
+                    "second, and draws at the console's sizes");
         return;
     }
-    // Every place is checked for what the console's build has there before anything is
-    // written: a title that turns out to be other than thought is left as it is.
-    struct Change {
-        u64 at;
-        u64 was;
-        u64 now;
-        u32 bytes;
-    };
-    std::vector<Change> changes;
-    for (s32 level = FirstHeadsetLevel; level <= LastHeadsetLevel; ++level) {
-        const auto& was = ConsoleSizes[level];
-        const auto& now = larger.sizes[level];
-        changes.push_back({SizeWidths + 4 * level, was[0], now[0], 4});
-        changes.push_back({SizeHeights + 4 * level, was[1], now[1], 4});
-        changes.push_back({SizeSwitch[level - FirstHeadsetLevel][0], was[1], now[1], 4});
-        changes.push_back({SizeSwitch[level - FirstHeadsetLevel][1], was[0], now[0], 4});
-        changes.push_back({SizePixels + 32 * level, u64{was[0]} * was[1], u64{now[0]} * now[1], 8});
-    }
-    const auto& eye_was = ConsoleSizes[LastHeadsetLevel];
-    const auto& eye_now = larger.sizes[LastHeadsetLevel];
-    for (u32 i = 0; i < EyeSizes.size(); ++i) {
-        changes.push_back({EyeSizes[i], eye_was[i % 2], eye_now[i % 2], 4});
-    }
-    for (const u64 at : TargetPool) {
-        changes.push_back({at, ConsoleTargetPool, larger.target_pool, 4});
-    }
-    for (const u64 at : SmallPool) {
-        changes.push_back({at, ConsoleSmallPool, larger.small_pool, 4});
-    }
-    changes.push_back({GraphicsHeap, ConsoleGraphicsHeap, larger.graphics_heap, 8});
+    LOG_INFO(Core, "CUSA12392 in a build known from inside: {}", build->name);
 
-    for (const Change& change : changes) {
-        u64 found = 0;
-        std::memcpy(&found, reinterpret_cast<const void*>(base + change.at), change.bytes);
-        if (found != change.was) {
+    const Larger& larger = GetLarger();
+    if (larger.factor != 1.0) {
+        // Every place is checked for what the console's build has there before anything is
+        // written: a title that turns out to be other than thought is left as it is.
+        const auto changes = Builds::SizeChanges(*build, larger);
+        if (const Builds::Change* unexpected = Builds::Apply(image, changes);
+            unexpected != nullptr) {
             LOG_WARNING(Core,
-                        "The title has {:#x} at {:#x} where {:#x} was expected: it draws at the "
+                        "The title does not have {:#x} at {:#x} as expected: it draws at the "
                         "console's sizes",
-                        found, change.at, change.was);
-            return;
+                        unexpected->was, unexpected->at);
+        } else {
+            LOG_INFO(Core,
+                     "The title draws at up to {} an eye instead of 1440x1536 ({:.2f} times as "
+                     "wide), the smallest {}; its render targets have {} MB, its graphics memory "
+                     "{} MB",
+                     SizeName(LastHeadsetLevel), larger.factor, SizeName(FirstHeadsetLevel),
+                     larger.target_pool >> 20, larger.graphics_heap >> 20);
         }
     }
-    for (const Change& change : changes) {
-        std::memcpy(reinterpret_cast<void*>(base + change.at), &change.now, change.bytes);
+    if (const Settings& settings = GetSettings(); settings.time_step && settings.physics_step) {
+        const auto changes = Builds::PhysicsStepChanges(*build);
+        if (const Builds::Change* unexpected = Builds::Apply(image, changes);
+            unexpected != nullptr) {
+            LOG_WARNING(Core,
+                        "The title does not have {:#x} at {:#x} as expected: its physics are "
+                        "left as they are, and collisions that it moves may end up beside what "
+                        "is drawn",
+                        unexpected->was, unexpected->at);
+        } else {
+            LOG_INFO(Core, "The title's physics take every step with the time step its bodies "
+                           "were sent with");
+        }
     }
-    LOG_INFO(Core,
-             "The title draws at up to {} an eye instead of 1440x1536 ({:.2f} times as wide), "
-             "the smallest {}; its render targets have {} MB, its graphics memory {} MB",
-             SizeName(LastHeadsetLevel), larger.factor, SizeName(FirstHeadsetLevel),
-             larger.target_pool >> 20, larger.graphics_heap >> 20);
+    known_base = base;
+    known_build.store(build, std::memory_order_release);
 }
 
 void NoteView(const Vr::Vec3& tracker_head) {
     static constexpr auto Interval = std::chrono::seconds{10};
 
-    const VAddr base = KnownBase();
-    if (base == 0) {
+    const Build* const build = known_build.load(std::memory_order_acquire);
+    if (build == nullptr) {
         return;
     }
+    const VAddr base = known_base;
     static std::mutex mutex;
     static Vr::Vec3 last_origin;
     static Clock::time_point last_report;
@@ -847,7 +961,7 @@ void NoteView(const Vr::Vec3& tracker_head) {
     if (!lock.owns_lock()) {
         return;
     }
-    const u64 manager = Read<u64>(base + ManagerPointer);
+    const u64 manager = Read<u64>(base + build->manager_pointer);
     if (manager == 0) {
         return;
     }

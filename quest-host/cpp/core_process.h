@@ -4,6 +4,7 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -12,21 +13,8 @@
 
 #include <sys/types.h>
 
+#include "pad_state.h"
 #include "vr_protocol.h"
-
-/// What the emulated DualShock 4 looks like right now. Buttons use the PS4 pad bit layout.
-struct PadState {
-    uint32_t buttons{};
-    uint8_t left_x{128}, left_y{128}, right_x{128}, right_y{128};
-    uint8_t left_trigger{}, right_trigger{};
-    bool touch_down{};
-    uint16_t touch_x{}, touch_y{};
-    bool has_motion{};
-    float gyro[3]{};
-    float accel[3]{0.0f, 9.81f, 0.0f};
-
-    bool operator==(const PadState&) const = default;
-};
 
 /// Whether the game may listen to the headset's microphone, and how much louder than it is
 /// what it hears should be made.
@@ -36,6 +24,9 @@ struct MicrophoneSettings {
     /// For tests nobody is there to blow for: instead of the microphone, a second of noise
     /// every five, as loud as the game takes blowing hard to be.
     bool test_signal{};
+    /// Set while the player blows with buttons instead of with their breath: the game then
+    /// hears that same noise, whatever the microphone has to say (or is allowed to).
+    std::shared_ptr<const std::atomic<bool>> blowing;
 };
 
 /// Everything needed to start the emulator core.
@@ -103,6 +94,10 @@ public:
 
     /// Applies to microphone ports the game opens from now on.
     void SetMicrophone(bool enabled, float gain, bool test_signal = false);
+    /// The player blows with buttons, or has stopped: what the game hears follows at once.
+    void SetBlowing(bool blowing_) {
+        blowing->store(blowing_, std::memory_order_relaxed);
+    }
 
     /// Thread id of the core's thread whose name starts with `prefix`, or 0.
     pid_t FindThread(const std::string& prefix) const;
@@ -136,6 +131,8 @@ private:
     std::thread wait_thread;
 
     MicrophoneSettings microphone;
+    /// Shared with the threads that serve the game's microphone ports, which may outlast this.
+    std::shared_ptr<std::atomic<bool>> blowing{std::make_shared<std::atomic<bool>>(false)};
 
     std::mutex mutex;
     std::string message;

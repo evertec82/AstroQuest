@@ -49,12 +49,32 @@ precision highp float;
 uniform sampler2D frame;
 uniform int swap_red_blue;
 uniform int decode_srgb;
+uniform int reduced_fov;
+uniform vec4 fov_tan;
 in vec2 uv;
 out vec4 color;
 void main() {
     vec3 c = texture(frame, uv).rgb;
     if (swap_red_blue != 0) {
         c = c.bgr;
+    }
+    if (reduced_fov != 0) {
+        // Each eye's aperture is centred on straight ahead, not on the texture midpoint.
+        // With asymmetric headset optics those midpoints point in opposite directions.
+        vec2 eye_uv = vec2(fract(uv.x * 2.0), uv.y);
+        vec2 axis = vec2((uv.x < 0.5 ? fov_tan.x : fov_tan.y) /
+                            (fov_tan.x + fov_tan.y),
+                        fov_tan.z / (fov_tan.z + fov_tan.w));
+        vec2 radius = mix(axis, vec2(1.0) - axis, step(axis, eye_uv));
+        // The pillowed rectangle reaches each frustum edge, with its curved corners around
+        // the optical axis. Only visibility changes; the scene and lens warp are untouched.
+        vec2 q = abs((eye_uv - axis) / radius);
+        vec2 q2 = q * q;
+        float edge = dot(q2, q2);
+        float feather = max(0.10, 1.5 * fwidth(edge));
+        // Finish the fade just inside the image, so filtering never leaks a colored seam
+        // from the other eye or leaves a hard line at the projection's rectangular bounds.
+        c *= 1.0 - smoothstep(0.98 - feather, 0.98, edge);
     }
     // The emulator delivers display-ready values. An sRGB target encodes whatever is written to
     // it, so those have to be made linear first.
@@ -214,6 +234,8 @@ bool FrameBlitter::Create() {
     }
     uniform_swap = glGetUniformLocation(program, "swap_red_blue");
     uniform_decode = glGetUniformLocation(program, "decode_srgb");
+    uniform_mask = glGetUniformLocation(program, "reduced_fov");
+    uniform_fov = glGetUniformLocation(program, "fov_tan");
     glGenVertexArrays(1, &vertex_array);
     const char* extensions = reinterpret_cast<const char*>(glGetString(GL_EXTENSIONS));
     write_control =
@@ -233,7 +255,7 @@ void FrameBlitter::Destroy() {
 }
 
 void FrameBlitter::Draw(GLuint texture, uint32_t width, uint32_t height, bool swap_red_blue,
-                        bool srgb_target) const {
+                        bool srgb_target, bool reduced_fov, const float* fov) const {
     glViewport(0, 0, static_cast<GLsizei>(width), static_cast<GLsizei>(height));
     glDisable(GL_BLEND);
     glDisable(GL_DEPTH_TEST);
@@ -245,6 +267,10 @@ void FrameBlitter::Draw(GLuint texture, uint32_t width, uint32_t height, bool sw
     glUseProgram(program);
     glUniform1i(uniform_swap, swap_red_blue ? 1 : 0);
     glUniform1i(uniform_decode, srgb_target && !write_control ? 1 : 0);
+    glUniform1i(uniform_mask, reduced_fov ? 1 : 0);
+    glUniform4f(uniform_fov, fov != nullptr ? fov[0] : 1.0f,
+                fov != nullptr ? fov[1] : 1.0f, fov != nullptr ? fov[2] : 1.0f,
+                fov != nullptr ? fov[3] : 1.0f);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, texture);
     glBindVertexArray(vertex_array);

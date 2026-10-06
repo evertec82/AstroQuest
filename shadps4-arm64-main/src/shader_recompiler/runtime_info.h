@@ -147,8 +147,11 @@ struct GeometryRuntimeInfo {
     u64 vs_copy_hash;
 
     bool operator==(const GeometryRuntimeInfo& other) const {
-        return num_outputs == other.num_outputs && outputs == other.outputs && num_invocations &&
-               other.num_invocations && output_vertices == other.output_vertices &&
+        return num_outputs == other.num_outputs && outputs == other.outputs &&
+               num_invocations == other.num_invocations &&
+               output_vertices == other.output_vertices &&
+               in_vertex_data_size == other.in_vertex_data_size &&
+               out_vertex_data_size == other.out_vertex_data_size && mode == other.mode &&
                in_primitive == other.in_primitive &&
                std::ranges::equal(out_primitive, other.out_primitive) &&
                vs_copy_hash == other.vs_copy_hash;

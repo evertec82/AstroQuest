@@ -4,6 +4,27 @@
 # main ones can be chosen in a small window before the game starts.
 param([string]$SettingsFile = "", [switch]$NoMenu, [switch]$ForceMenu)
 
+# The 64-bit PowerShell of this PC, for a 32-bit one to hand over to; "" where this is it.
+# Started from a 32-bit program (a file manager, a game launcher), "powershell" is the 32-bit
+# one, and Windows shows that other system folders and another registry than the emulator
+# gets, which is a 64-bit program: the Visual C++ runtime looked missing however often it was
+# installed (one of its files only exists in 64 bits), and so would the OpenXR runtime.
+function Get-NativePowerShell {
+    if (-not [Environment]::Is64BitOperatingSystem -or [Environment]::Is64BitProcess) { return "" }
+    $native = Join-Path $env:windir "Sysnative\WindowsPowerShell\v1.0\powershell.exe"
+    if ([System.IO.File]::Exists($native)) { return $native }
+    return ""
+}
+$nativePowerShell = Get-NativePowerShell
+if ($nativePowerShell -ne "") {
+    $again = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $MyInvocation.MyCommand.Path)
+    if ($SettingsFile -ne "") { $again += @("-SettingsFile", $SettingsFile) }
+    if ($NoMenu) { $again += "-NoMenu" }
+    if ($ForceMenu) { $again += "-ForceMenu" }
+    & $nativePowerShell @again
+    exit $LASTEXITCODE
+}
+
 $ErrorActionPreference = "Continue"
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $root = Split-Path -Parent $here
@@ -53,6 +74,75 @@ Read-Settings
 $widths = @(1440, 1800, 2160, 2520, 2880, 3240, 3600)
 function EyeHeight([int]$width) { return [int]([math]::Round(1536.0 * $width / 1440 / 8) * 8) }
 $caps = @(120, 90, 72, 60, 45, 40, 36, 30)
+# The languages the game has, as Windows names them.
+$gameLanguages = @("en-US", "en-GB", "fr-FR", "fr-CA", "es-ES", "es-419", "de-DE", "it-IT", "nl-NL",
+                   "pt-PT", "pt-BR", "ru-RU", "pl-PL", "tr-TR", "sv-SE", "nb-NO", "da-DK", "fi-FI",
+                   "cs-CZ", "hu-HU", "el-GR", "ro-RO", "ar-SA", "ja-JP", "ko-KR", "zh-Hant", "zh-Hans",
+                   "th-TH")
+# language: the language the game is played in. windows (the default): the one Windows is shown
+# in; otherwise one of the above. The emulator sets its console to it, and the game takes the
+# console's language as it does on a PlayStation (English where it does not have it).
+function Get-GameLanguage {
+    $wanted = Setting "language" "windows"
+    if ($wanted -eq "" -or $wanted -eq "windows") {
+        return [System.Globalization.CultureInfo]::CurrentUICulture.Name
+    }
+    return $wanted
+}
+# A language's name in that language, and in English where that differs.
+function Get-LanguageName([string]$tag) {
+    try {
+        $culture = [System.Globalization.CultureInfo]::GetCultureInfo($tag)
+        if ($culture.NativeName -eq $culture.EnglishName) { return $culture.EnglishName }
+        return ($culture.NativeName + " - " + $culture.EnglishName)
+    } catch { return $tag }
+}
+
+function Get-VrInstructions([string]$runtime) {
+    # How to move the gamepad in the game while nothing tracks where it is.
+    $placeHelp = "Hold the PS button and press the D-pad to move it (L1 nearer, R1 farther); PS + triangle switches between your place for it and the standard one."
+    # For players who sit where they cannot turn round.
+    $turnHelp = "To turn round without turning yourself: hold L1 (the headset's controllers: the left grip) and flick the right stick to a side."
+    if ($runtime -match 'steamvr|steamxr') {
+        return @(
+            "Start SteamVR and check that the headset is ready (an Index: with its base stations). Virtual Desktop is not needed."
+            "Set the headset to 120 Hz in SteamVR's Video settings for the game's own 60 frames a second (90 Hz gives 45)."
+            "The DualSense: connect it to THIS PC by USB or Bluetooth. It keeps its motion sensors, touchpad and rumble."
+            "If launching through a Steam shortcut, disable Steam Input for that shortcut so the emulator can read the DualSense."
+            "SteamVR does not track bare hands: the gamepad in the game stays in front of you and turns with its own sensors."
+            $placeHelp
+            "Sound and microphone: the ones chosen in SteamVR's Audio settings; the game uses the microphone for blowing."
+            "The headset's controllers play too, with no gamepad or whenever they were used after it (right A jump, right B punch, left X or A back, left Y or B triangle, left menu or trackpad press = OPTIONS)."
+            $turnHelp
+        )
+    }
+    if ($runtime -match 'virtualdesktop') {
+        return @(
+            "In the headset: connect Virtual Desktop to this PC. The game moves into the headset by itself."
+            "The DualSense: connect it to THIS PC (USB cable, or Bluetooth paired with the PC). Paired with"
+            "the headset, it reaches the PC through Virtual Desktop without motion sensors or touchpad."
+            "Where it is in the game comes from your hands: hand tracking on in the headset, and in"
+            "Virtual Desktop's settings hand tracking forwarded to the PC. Without that it stays in front of you:"
+            $placeHelp
+            "The Touch controllers play too, with no gamepad or whenever they were used after it (A jump, B punch, X back, Y triangle, left menu = OPTIONS)."
+            $turnHelp
+        )
+    }
+    return @(
+        "Start your headset's OpenXR runtime and check that the headset is ready."
+        "The DualSense: connect it to THIS PC by USB or Bluetooth, with Steam Input disabled for any Steam shortcut."
+        "Without hand tracking, the gamepad in the game stays in front of you and turns with its own sensors."
+        $placeHelp
+        "The headset's controllers play too, with no gamepad or whenever they were used after it (right A jump, right B punch, left X or A back, left Y or B triangle)."
+        $turnHelp
+    )
+}
+
+function Get-DesktopView {
+    if ((Setting "desktop_view" "stereo") -eq "combined") { return "combined" }
+    if ((Setting "desktop_view" "stereo") -eq "spectator") { return "spectator" }
+    return "stereo"
+}
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -145,10 +235,13 @@ function Get-GameInfo([string]$eboot) {
     return Read-Sfo ([System.IO.Path]::Combine($folder, "sce_sys", "param.sfo"))
 }
 
-# The unpacked game under a folder: the one this is made for, if there are several.
+# The unpacked game under a folder: the one this is made for, if there are several. (A folder
+# named after a game with -UPDATE, -patch or -mods at the end is not a game: the emulator lays
+# what is in it over the game's own files.)
 function Find-Game([string]$top) {
     $first = $null
     foreach ($folder in (Get-Folders $top)) {
+        if ($folder -match '-(UPDATE|patch|mods)$') { continue }
         $eboot = [System.IO.Path]::Combine($folder, "eboot.bin")
         if (-not [System.IO.File]::Exists($eboot)) { continue }
         if ((Get-GameInfo $eboot)["TITLE_ID"] -eq $madeFor) { return $eboot }
@@ -157,15 +250,37 @@ function Find-Game([string]$top) {
     return $first
 }
 
-# The package under a folder: the largest, if there are several (a game's is larger than its
-# updates').
+# Whether a package is an update of a game (a patch), which holds the files the update changed
+# and no more, rather than the game: its header says so.
+function Test-UpdatePackage([string]$path) {
+    try {
+        $head = New-Object byte[] 128
+        $stream = [System.IO.File]::OpenRead($path)
+        try { $read = $stream.Read($head, 0, $head.Length) } finally { $stream.Dispose() }
+        if ($read -lt $head.Length) { return $false }
+        if ($head[0] -ne 0x7F -or $head[1] -ne 0x43 -or $head[2] -ne 0x4E -or $head[3] -ne 0x54) {
+            return $false
+        }
+        # (First patch, later patch, cumulative patch: 0x00100000, 0x40000000, 0x20000000.)
+        return (($head[0x78] -band 0x60) -ne 0) -or (($head[0x79] -band 0x30) -ne 0)
+    } catch { return $false }
+}
+
+# The package under a folder: a game's own before any update of it, and the largest if there
+# are several.
 function Find-Package([string]$top) {
     $largest = $null
+    $largestIsUpdate = $true
     foreach ($folder in (Get-Folders $top)) {
         try { $files = [System.IO.Directory]::GetFiles($folder, "*.pkg") } catch { continue }
         foreach ($file in $files) {
             $info = New-Object System.IO.FileInfo($file)
-            if ($null -eq $largest -or $info.Length -gt $largest.Length) { $largest = $info }
+            $isUpdate = Test-UpdatePackage $file
+            if ($null -eq $largest -or ($largestIsUpdate -and -not $isUpdate) -or
+                ($largestIsUpdate -eq $isUpdate -and $info.Length -gt $largest.Length)) {
+                $largest = $info
+                $largestIsUpdate = $isUpdate
+            }
         }
     }
     return $largest
@@ -257,6 +372,10 @@ function Expand-Package($package) {
     $contentId = Read-PackageId $package.FullName
     if ($null -eq $contentId) {
         [void](Show-Box ($package.FullName + "`n`nis not a PlayStation 4 package.") "OK" "Warning")
+        return $null
+    }
+    if (Test-UpdatePackage $package.FullName) {
+        [void](Show-Box ("This package is an update of the game, not the game:`n`n" + $package.Name + "`n`nAn update holds only the files it changed. Put the package of the game itself (about 7 GB) in the games folder; the update is not needed, and is left alone when it is there as well. (A copy of the game that already has its update 1.04 in it plays too.)") "OK" "Warning")
         return $null
     }
     $tool = $null
@@ -504,14 +623,24 @@ function Resolve-Game {
     }
 }
 
-# The Microsoft Visual C++ runtime, which the emulator is built against.
-function Test-Runtime {
-    $system = [System.Environment]::SystemDirectory
+# The Microsoft Visual C++ runtime, which the emulator is built against: the files of it that
+# are neither in Windows' (64-bit) system folder nor next to the emulator.
+function Get-MissingRuntime([string]$system = "", [string]$beside = "") {
+    if ($system -eq "") {
+        $system = [System.Environment]::SystemDirectory
+        # (To a 32-bit PowerShell that name shows the 32-bit files.)
+        if ([Environment]::Is64BitOperatingSystem -and -not [Environment]::Is64BitProcess) {
+            $system = Join-Path $env:windir "Sysnative"
+        }
+    }
+    $missing = @()
     foreach ($name in @("vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll",
                         "msvcp140_2.dll", "msvcp140_atomic_wait.dll")) {
-        if (-not [System.IO.File]::Exists((Join-Path $system $name))) { return $false }
+        if ([System.IO.File]::Exists((Join-Path $system $name))) { continue }
+        if ($beside -ne "" -and [System.IO.File]::Exists((Join-Path $beside $name))) { continue }
+        $missing += $name
     }
-    return $true
+    return ,$missing
 }
 
 # --- the window -------------------------------------------------------------------------------
@@ -519,7 +648,7 @@ function Show-Menu {
 
     $form = New-Object System.Windows.Forms.Form
     $form.Text = "Astro Bot VR"
-    $form.ClientSize = New-Object System.Drawing.Size(560, 452)
+    $form.ClientSize = New-Object System.Drawing.Size(560, 514)
     $form.StartPosition = "CenterScreen"
     $form.FormBorderStyle = "FixedDialog"
     $form.MaximizeBox = $false
@@ -572,9 +701,25 @@ function Show-Menu {
     $label = New-Object System.Windows.Forms.Label
     $label.Text = "Maximum framerate (FPS)"
     $label.Font = New-Object System.Drawing.Font("Segoe UI", 9.5, [System.Drawing.FontStyle]::Bold)
-    $label.SetBounds(16, $y, 520, 20)
+    $label.SetBounds(16, $y, 250, 20)
+    $form.Controls.Add($label)
+    $label = New-Object System.Windows.Forms.Label
+    $label.Text = "Language of the game"
+    $label.Font = New-Object System.Drawing.Font("Segoe UI", 9.5, [System.Drawing.FontStyle]::Bold)
+    $label.SetBounds(284, $y, 260, 20)
     $form.Controls.Add($label)
     $y += 24
+    $language = New-Object System.Windows.Forms.ComboBox
+    $language.Name = "language"
+    $language.DropDownStyle = "DropDownList"
+    [void]$language.Items.Add("As Windows: " + (Get-LanguageName ([System.Globalization.CultureInfo]::CurrentUICulture.Name)))
+    foreach ($tag in $gameLanguages) { [void]$language.Items.Add((Get-LanguageName $tag)) }
+    # (A language written into the settings that is not in the list stays what it is unless
+    # another is chosen here.)
+    $languageBefore = [array]::IndexOf($gameLanguages, (Setting "language" "windows")) + 1
+    $language.SelectedIndex = $languageBefore
+    $language.SetBounds(284, $y, 260, 26)
+    $form.Controls.Add($language)
     $fps = New-Object System.Windows.Forms.ComboBox
     $fps.DropDownStyle = "DropDownList"
     foreach ($cap in $caps) {
@@ -589,7 +734,7 @@ function Show-Menu {
     $form.Controls.Add($fps)
     $y += 32
     $fpsText = New-Object System.Windows.Forms.Label
-    $fpsText.Text = "A frame lasts a whole number of the headset's refreshes, so the headset's refresh rate decides what is possible: at 120 Hz 120, 60, 40 or 30 frames a second, at 90 Hz 90, 45 or 30, at 72 Hz 72 or 36. Virtual Desktop sets the refresh rate (Settings > Streaming > Frame rate): choose 120 for 60 frames a second."
+    $fpsText.Text = "A frame lasts a whole number of the headset's refreshes: at 120 Hz, 120, 60, 40 or 30 frames a second; at 90 Hz, 90, 45 or 30; at 80 Hz, 80 or 40. Choose 120 Hz for 60 frames a second. Set it in SteamVR Video settings for an Index, or Virtual Desktop Streaming settings for a Quest."
     $fpsText.SetBounds(16, $y, 530, 84)
     $form.Controls.Add($fpsText)
     $y += 88
@@ -625,6 +770,30 @@ function Show-Menu {
     & $updateFov
     $y += 46
 
+    $label = New-Object System.Windows.Forms.Label
+    $label.Text = "Desktop view"
+    $label.Font = New-Object System.Drawing.Font("Segoe UI", 9.5, [System.Drawing.FontStyle]::Bold)
+    $label.SetBounds(16, $y, 520, 20)
+    $form.Controls.Add($label)
+    $y += 22
+    $desktopView = New-Object System.Windows.Forms.ComboBox
+    $desktopView.Name = "desktopView"
+    $desktopView.DropDownStyle = "DropDownList"
+    $desktopModes = @("stereo", "spectator", "combined")
+    $desktopView.Items.AddRange(@("Stereo (both eyes)", "Single eye (spectator)", "Combined eyes (spectator)"))
+    $desktopView.SelectedIndex = [array]::IndexOf($desktopModes, (Get-DesktopView))
+    $desktopView.SetBounds(16, $y, 248, 26)
+    $form.Controls.Add($desktopView)
+    $desktopCrop = New-Object System.Windows.Forms.CheckBox
+    $desktopCrop.Name = "desktopCrop"
+    $desktopCrop.Text = "Crop top/bottom to fill"
+    $desktopCrop.Checked = (Setting "desktop_crop" "0") -eq "1"
+    $desktopCrop.SetBounds(284, $y, 250, 26)
+    $desktopCrop.Enabled = $desktopView.SelectedIndex -ne 0
+    $desktopView.Add_SelectedIndexChanged({ $desktopCrop.Enabled = $desktopView.SelectedIndex -ne 0 })
+    $form.Controls.Add($desktopCrop)
+    $y += 40
+
     $again = New-Object System.Windows.Forms.CheckBox
     $again.Text = "Show this window at every start"
     $again.Checked = (Setting "menu" "1") -ne "0"
@@ -652,8 +821,13 @@ function Show-Menu {
     if ($result -ne [System.Windows.Forms.DialogResult]::OK) { return $false }
     Save-Setting "resolution" ($widths[$resolution.Value])
     Save-Setting "fps" ($caps[$fps.SelectedIndex])
+    if ($language.SelectedIndex -ne $languageBefore) {
+        Save-Setting "language" ($(if ($language.SelectedIndex -le 0) { "windows" } else { $gameLanguages[$language.SelectedIndex - 1] }))
+    }
     Save-Setting "fov" ($fov.Value * 5)
     Save-Setting "menu" ($(if ($again.Checked) { "1" } else { "0" }))
+    Save-Setting "desktop_view" ($desktopModes[$desktopView.SelectedIndex])
+    Save-Setting "desktop_crop" ($(if ($desktopCrop.Checked) { "1" } else { "0" }))
     Read-Settings
     return $true
 }
@@ -663,10 +837,14 @@ if (-not [System.IO.File]::Exists($emulator)) {
     [void](Show-Box ("The emulator, shadps4.exe, is missing from`n" + $here + "`n`nUnzip the whole AstroQuest package again. (Built from the source: run tools/make-pc-vr.sh.)") "OK" "Error")
     exit 1
 }
-if (-not (Test-Runtime)) {
-    $answer = Show-Box "The emulator needs the Microsoft Visual C++ runtime, which is not installed on this PC.`n`nDownload its installer from Microsoft now? Run it, then start Play Astro Bot VR again." "YesNo" "Warning"
+# (Never a dead end: whoever has installed it and is still told it is missing can go on, and
+# Windows itself says so if a file really is not there.)
+$missingRuntime = Get-MissingRuntime "" $here
+if ($missingRuntime.Count -gt 0) {
+    Say ("Of the Microsoft Visual C++ runtime, not found on this PC: " + ($missingRuntime -join ", ")) "Yellow"
+    $answer = Show-Box ("The emulator needs the Microsoft Visual C++ runtime (64-bit), and this PC seems to lack it: " + ($missingRuntime -join ", ") + " not found.`n`nYes: download its installer from Microsoft. Run it, then start Play Astro Bot VR again.`nNo: it is installed, start the game all the same.`nCancel: quit.") "YesNoCancel" "Warning"
     if ($answer -eq "Yes") { Start-Process "https://aka.ms/vs/17/release/vc_redist.x64.exe" }
-    exit 1
+    if ($answer -ne "No") { exit 1 }
 }
 
 $game = Resolve-Game
@@ -675,10 +853,20 @@ Say ("The game: " + $game)
 $info = Get-GameInfo $game
 if ($info.Count -eq 0) {
     Say "sce_sys\param.sfo is missing next to it: this is not a complete copy of the game, and the emulator may not know it." "Yellow"
-} elseif ($info["TITLE_ID"] -ne $madeFor -or $info["APP_VER"] -ne "01.00") {
-    Say ("This is " + $info["TITLE"] + ", " + $info["TITLE_ID"] + " version " + $info["APP_VER"] + ". AstroQuest is made for the European release, " + $madeFor + " version 01.00: with another, its fixes for the game's speed and picture do not apply, and it may not run.") "Yellow"
-} elseif ([System.IO.Path]::GetDirectoryName($game).Length + 1 + $longestInside -gt 259) {
-    [void](Show-Box ("The game is in`n" + [System.IO.Path]::GetDirectoryName($game) + "`n`nThat path is too long: some of the game's files have a path of more than 259 characters there, which the emulator cannot open, and the game would stop when it needs them. Move the folder somewhere with a shorter path, for example C:\Games\AstroQuest, and start again.") "OK" "Warning")
+} elseif ($info["TITLE_ID"] -ne $madeFor) {
+    Say ("This is " + $info["TITLE"] + ", " + $info["TITLE_ID"] + ". AstroQuest is made for ASTRO BOT Rescue Mission in its European release, " + $madeFor + ": its fixes for the game's speed and picture do not apply to another, and it may not run.") "Yellow"
+} elseif (@("01.00", "01.04") -notcontains $info["APP_VER"]) {
+    # (What decides is the executable itself, which the emulator looks at as it loads it and
+    # names below; what the game says its version is can be wrong.)
+    Say ("This copy of the game says it is version " + $info["APP_VER"] + ". AstroQuest knows versions 01.00 and 01.04 from inside: another plays in slow motion where frames take long, and at the console's resolution.") "Yellow"
+}
+$gameFolder = [System.IO.Path]::GetDirectoryName($game)
+if ($info["TITLE_ID"] -eq $madeFor -and -not [System.IO.File]::Exists([System.IO.Path]::Combine($gameFolder, "sce_module", "libc.prx"))) {
+    [void](Show-Box ("This is not a complete copy of the game:`n" + $gameFolder + "`n`nParts that every copy has are missing (sce_module\libc.prx for one). A folder with only an update of the game in it looks like this: an update holds the files it changed and no more. Put the update's files over a copy of the whole game, or use the game without its update.") "OK" "Warning")
+    exit 1
+}
+if ($gameFolder.Length + 1 + $longestInside -gt 259) {
+    [void](Show-Box ("The game is in`n" + $gameFolder + "`n`nThat path is too long: some of the game's files have a path of more than 259 characters there, which the emulator cannot open, and the game would stop when it needs them. Move the folder somewhere with a shorter path, for example C:\Games\AstroQuest, and start again.") "OK" "Warning")
     exit 1
 }
 
@@ -708,11 +896,14 @@ if ($resolution -eq "game") {
     }
 }
 $env:SHADPS4_VR_SHARPEN = Setting "sharpen" "0.3"
+$env:SHADPS4_VR_DESKTOP_VIEW = Get-DesktopView
+$env:SHADPS4_VR_DESKTOP_CROP = $(if ((Setting "desktop_crop" "0") -eq "1") { "1" } else { "0" })
 if ((Setting "msaa") -ne "") { $env:SHADPS4_MAX_MSAA = Setting "msaa" }
 if ((Setting "antialias" "1") -eq "0") { $env:SHADPS4_RESOLVE_AA = "0" }
 if ((Setting "hands" "1") -eq "0") { $env:SHADPS4_XR_HANDS = "0" }
 if ((Setting "predict_ms") -ne "") { $env:SHADPS4_XR_PREDICT_MS = Setting "predict_ms" }
 if ((Setting "stick_touchpad" "1") -eq "0") { $env:SHADPS4_STICK_TOUCHPAD = "0" }
+if ((Setting "mic_gain") -ne "") { $env:SHADPS4_MIC_GAIN = Setting "mic_gain" }
 if ((Setting "surround" "1") -eq "0") { $env:SHADPS4_VIRTUAL_SURROUND = "0" }
 if ((Setting "real_time" "1") -eq "0") { $env:SHADPS4_TITLE_TIMESTEP = "0" }
 $fovSetting = Setting "fov" "100"
@@ -730,6 +921,8 @@ if ((Setting "pause" "1") -eq "0") { $env:SHADPS4_XR_PAUSE = "0" }
 if ((Setting "controllers" "1") -eq "0") { $env:SHADPS4_XR_CONTROLLERS = "0" }
 if ((Setting "controller_hand" "right") -eq "left") { $env:SHADPS4_XR_PAD_HAND = "left" }
 $env:SHADPS4_XR_WAIT = Setting "wait" "60"
+$env:SHADPS4_CONSOLE_LANGUAGE = Get-GameLanguage
+if ((Setting "turn") -ne "") { $env:SHADPS4_VR_TURN = Setting "turn" }
 foreach ($pair in $extraEnv) {
     $at = $pair.IndexOf("=")
     if ($at -ge 1) { Set-Item -Path ("Env:" + $pair.Substring(0, $at)) -Value $pair.Substring($at + 1) }
@@ -748,7 +941,8 @@ if ($env:XR_RUNTIME_JSON) {
 }
 if ($runtime -eq "") {
     Say "No OpenXR runtime is set up on this PC: the game will only show on the monitor." "Yellow"
-    Say "Virtual Desktop Streamer installs one (Options > OpenXR Runtime: VDXR)."
+    Say "For an Index, use SteamVR Settings > OpenXR > Set SteamVR as OpenXR Runtime."
+    Say "For Virtual Desktop, use Streamer Options > OpenXR Runtime: VDXR."
 } else {
     Say "OpenXR runtime: $runtime"
     if ($runtime -match "virtualdesktop") {
@@ -765,17 +959,19 @@ if ($runtime -eq "") {
     }
 }
 Say ""
-Say "In the headset: connect Virtual Desktop to this PC. The game moves into the headset by itself."
+Get-VrInstructions $runtime | ForEach-Object { Say $_ }
 if ($env:SHADPS4_OPENXR -ne "0" -and [int]$env:SHADPS4_XR_WAIT -gt 0) {
     Say ("The game waits up to " + $env:SHADPS4_XR_WAIT + " seconds for the headset before it starts on the monitor.")
 }
-Say "The DualSense: connect it to THIS PC (USB cable, or Bluetooth paired with the PC). Paired with"
-Say "the headset, it reaches the PC through Virtual Desktop without motion sensors or touchpad."
-Say "Where it is in the game comes from your hands: hand tracking on in the headset, and in"
-Say "Virtual Desktop's settings hand tracking forwarded to the PC."
 Say "Hold OPTIONS for a second (or press the PS button) to reset the view."
-Say "No gamepad: the headset's own controllers play (A jump, B punch, right stick = touchpad,"
-Say "press both sticks in to reset the view)."
+Say "Where the game wants you to blow: into the headset's microphone, or hold the PS button and square"
+Say "(X and Y together on VR controllers)."
+Say "With VR controllers, or a gamepad that has no touchpad, the touchpad is on buttons:"
+Say "  right trigger (R2): press it and hold (water, guns)"
+Say "  right grip (R1): swipe forward (hook, throwing stars, chests)"
+Say "  left trigger (L2): pull back, let go to shoot (the catapult at the end of a level)"
+Say "  right stick: a finger on it, for anything else"
+Say "Both sticks of VR controllers pressed in reset the view."
 Say "Close the game's window to quit."
 Say ""
 # The emulator asks Windows for about 14 GB at once (the console's memory, and what the larger
@@ -831,10 +1027,16 @@ function Show-Log {
                     if (($script:reports % 6) -ne 1) { continue }
                 }
                 if ($warning) { Say ("  " + $text) "Yellow" } else { Say ("  " + $text) }
-            } elseif ($line -match '^\[Input\] <Info> \([^)]*\) \S+ (?:\w+: )?(Controller .*)$') {
+            } elseif ($line -match '^\[Input\] <Info> \([^)]*\) \S+ (?:\w+: )?(Controller .*|The controller.s touchpad .*)$') {
                 Say ("  " + $Matches[1])
-            } elseif ($line -match '^\[Core\] <Info> \([^)]*\) \S+ (?:\w+: )?(The title draws at up to .*|The scene is drawn at .*|Frames are given .*)$') {
+            } elseif ($line -match '^\[Input\] <Warning> \([^)]*\) \S+ (?:\w+: )?(Controller .*)$') {
+                Say ("  " + $Matches[1]) "Yellow"
+            } elseif ($line -match '^\[Core\] <Info> \([^)]*\) \S+ (?:\w+: )?(CUSA12392 in a build .*|The title draws at up to .*|The scene is drawn at .*|Frames are given .*|The console.s language: .*)$') {
                 Say ("  " + $Matches[1])
+            } elseif ($line -match '^\[Core\] <Warning> \([^)]*\) \S+ (?:\w+: )?(This build of CUSA12392 .*)$') {
+                Say ("  " + $Matches[1]) "Yellow"
+            } elseif ($line -match '^\[Lib\.AudioIn\] <(Info|Warning)> \([^)]*\) \S+ (?:\w+: )?(Microphone: .*)$') {
+                if ($Matches[1] -eq "Warning") { Say ("  " + $Matches[2]) "Yellow" } else { Say ("  " + $Matches[2]) }
             } elseif ($line -match '<Critical>.*?: (.*)$') {
                 $text = $Matches[1]
                 if (-not $shown.ContainsKey($text)) { $shown[$text] = 1; Say ("  ! " + $text) "Red" }
@@ -852,6 +1054,9 @@ Show-Log
 Say ""
 if ($null -ne $process.ExitCode -and $process.ExitCode -ne 0) {
     Say ("The emulator ended with code " + $process.ExitCode + ". Its log is $log") "Yellow"
+    if ($process.ExitCode -eq -1073741515) {
+        Say "Windows could not find a file the emulator needs: most likely the Microsoft Visual C++ runtime (64-bit) is not installed. Its installer: https://aka.ms/vs/17/release/vc_redist.x64.exe"
+    }
     if ($memoryShort -and ((Get-Date) - $startedAt).TotalSeconds -lt 30) {
         Say "It stopped as it started, and Windows was short of memory then (see above): close other programs and start again."
     }

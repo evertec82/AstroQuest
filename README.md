@@ -7,7 +7,7 @@ building the Windows emulator into `pc-vr/shadps4.exe`. See the fork notes in
 [README-PC-VR.md](README-PC-VR.md#experimental-pc-performance-build).
 
 **ASTRO BOT Rescue Mission (PS4 / PlayStation VR) in virtual reality on Meta Quest 3**, played
-from your own copy of the game through a PS4 emulator. Two ways to play:
+from your own copy of the game through a PS4 emulator. Ways to play:
 
 - **On the headset alone**: an app for the Quest 3 runs the emulator on the headset itself. No
   PC is needed once it is installed. Please note: while the standalone Meta Quest 3 build is
@@ -16,6 +16,11 @@ from your own copy of the game through a PS4 emulator. Two ways to play:
   PS4 hardware or the PC VR mode.
 - **On a Windows PC, shown in the Quest through Virtual Desktop**: the PC runs the game at the
   console's 60 frames a second and at up to six times its resolution.
+- **On a Windows PC with a Valve Index through SteamVR**: the same PC build uses SteamVR's
+  OpenXR runtime and a DualSense connected to the PC. Headset playback has been reported working; see
+  [the Index setup](README-PC-VR.md#valve-index-through-steamvr), including controller
+  positional-tracking limits. Other PC headsets go the same way, through SteamVR or an OpenXR
+  runtime of their own: a Bigscreen Beyond and a Pimax Dream Air have been reported working.
 
 The emulator is [shadPS4](https://github.com/shadps4-emu/shadPS4) (its ARM64 build,
 [zenithblue-oss/shadps4-arm64](https://github.com/zenithblue-oss/shadps4-arm64), on the
@@ -41,16 +46,23 @@ over Virtual Desktop and fixed since. Expect rough edges, and please report what
 
 ## What you need
 
-- **A Meta Quest 3.** (The Quest 3S has the same chip and should work, but nobody has tried.)
-- **A PS5 DualSense controller.** It stands in for the PS4 controller the game expects:
-  buttons, sticks, touchpad, motion sensors, rumble and light bar. (A DualShock 4 may work
-  too; untested.) On the PC the Quest's own Touch controllers can stand in for it.
-- **ASTRO BOT Rescue Mission, European release CUSA12392, version 1.00**, dumped from your own
-  console and game: either as the game's folder (the one with `eboot.bin`, `sce_sys`,
-  `sce_module` in it, about 13 GB) or as the `.pkg` package made from the dump, which the PC
-  launcher unpacks by itself. (A package downloaded from the PlayStation Store is encrypted
-  and cannot be used.) Other regions and versions are untested, and the fixes for the game's
-  timing and resolution only apply to this one.
+- **A Meta Quest 3, or a Valve Index connected to a Windows PC running SteamVR.**
+  (The Quest 3S has the same chip and should work, but nobody has tried.)
+- **Something to play with.** A PS5 DualSense controller is best: it stands in for the PS4
+  controller the game expects with everything that one has (buttons, sticks, touchpad, motion
+  sensors, rumble and light bar; a DualShock 4 should do the same, untested). Without one,
+  **the Quest's own Touch controllers play the game**, on the headset alone as on the PC.
+  Other gamepads play too (Xbox, 8BitDo and the like): what they lack of a PS4 controller,
+  the touchpad and the motion sensors, is made up for, see "Playing" below.
+- **ASTRO BOT Rescue Mission, European release CUSA12392, version 1.00 or 1.04** (the game
+  as on its disc, or with its last update), dumped from your own console and game: either as
+  the game's folder (the one with `eboot.bin`, `sce_sys`, `sce_module` in it, about 13 GB) or
+  as the `.pkg` package made from the dump, which the PC launcher unpacks by itself. (A
+  package downloaded from the PlayStation Store is encrypted and cannot be used; a package
+  that is only the game's update is not the game: unpacked into a folder named
+  `CUSA12392-UPDATE` next to the game's `CUSA12392`, it is played over it.) Other regions and
+  the versions in between are untested, and the fixes for the game's timing and resolution
+  only apply to these two.
 - To install on the headset: a computer with
   [adb](https://developer.android.com/tools/releases/platform-tools) (or
   [SideQuest](https://sidequestvr.com/)) and the headset in
@@ -72,7 +84,7 @@ Download `AstroQuest-<version>-Quest3.apk` from the
    debugging in the headset, and run
 
    ```sh
-   adb install -r AstroQuest-0.13-Quest3.apk
+   adb install -r AstroQuest-0.20-Quest3.apk
    ```
 
    (or drag the APK onto SideQuest).
@@ -103,21 +115,45 @@ Download `AstroQuest-<version>-Quest3.apk` from the
 
    Either way, only a package made from a dump of the game can be unpacked; one downloaded
    from the PlayStation Store is encrypted.
-3. **Pair the DualSense with the headset**: Settings > Bluetooth > Pair, and on the
-   controller hold Create and the PS button until the light bar flashes.
+3. **If you play with a gamepad, pair it with the headset**: Settings > Bluetooth > Pair (on
+   a DualSense, hold Create and the PS button until the light bar flashes). The Touch
+   controllers need nothing.
 4. **Start "Astro VR Host"** from the App Library, under *Unknown Sources*. The first start
    takes a few seconds longer (it unpacks the emulator) and asks for the microphone: the game
    listens to it for blowing at things, as it did with PlayStation VR's.
 
 Playing:
 
-- Put the Touch controllers aside and hold the DualSense: the headset tracks your hands around
-  it, and that is where the controller is in the game.
+- The app begins with a menu for the field of view: a stick to a side chooses, ✕ / A or a
+  trigger starts the game.
+- **With a gamepad**: put the Touch controllers aside and hold it. The headset tracks your
+  hands around it, and that is where the controller is in the game. A gamepad without motion
+  sensors, which is every one that is not a PlayStation's, is turned and tilted in the game
+  by your hands, as far as the headset sees them.
+- **With the Touch controllers**: the right one is the controller in the game, where it is
+  and the way it points. Left stick to move; A is ✕, B is □, X is ○, Y is △; the left
+  controller's menu button is OPTIONS. X and Y together blow, where the game wants you to
+  blow into the microphone.
+- **The touchpad, on the Touch controllers and on a gamepad that has none**, is on buttons
+  (a card in the headset says so when the game starts, and again whenever you press
+  OPTIONS):
+  - **right trigger (R2): press it and hold**: the water cannon, the machine gun
+  - **right grip (R1): swipe forward**: the hook, the throwing stars, the chests
+  - **left trigger (L2): pull back, let go to shoot**: the catapult at the end of every
+    level (point the controller at the goal)
+  - the right stick is a finger on it, for anything else.
+- With both at hand, the game is played with the one you used last: a button on the other
+  changes over.
+- **To turn round without turning yourself** (on a seat that does not turn): hold the left
+  grip, or L1 on a gamepad, and flick the right stick to a side. Each flick turns the view 30
+  degrees that way; resetting the view faces you straight ahead again.
+- **The game speaks the headset's language**, of those it has (28; English otherwise).
 - The first screen asks to move the controller into a floating outline: hold it up in front
   of you where the outline is.
 - On the world map, **look** at a planet and press ✕.
-- **Reset the view** by holding OPTIONS for a second (or pressing the PS button) whenever you
-  sit differently and things are too close, too far or off to one side.
+- **Reset the view** by holding OPTIONS for a second (or pressing the PS button; with the
+  Touch controllers, hold the left menu button for a second or press both sticks in)
+  whenever you sit differently and things are too close, too far or off to one side.
 - Taking the headset off pauses the game.
 - Settings (refresh rate, resolution, field of view, sharpening, microphone gain...) go in
   `/sdcard/Android/data/com.astrobotquest.vrhost/files/vrhost.txt`; all of them are explained in
@@ -145,16 +181,54 @@ Download `AstroQuest-<version>-PC-VR-Windows.zip` from the
    set the frame rate to **120** (the game then runs at 60 frames a second, as on the console).
 4. **Connect the DualSense to the PC**, by USB cable or by Bluetooth paired with the PC, not
    with the headset: paired with the headset, it reaches the PC without motion sensors or
-   touchpad. With no gamepad on the PC, the Touch controllers play instead.
+   touchpad. The Touch controllers play as well: with no gamepad on the PC, and with one
+   whenever they were the ones used last.
 5. **Connect to the PC with Virtual Desktop**, then start **`Play Astro Bot VR.bat`** on the
    desktop you see in the headset. The first time, it offers to unpack the game if it is a
    package (or asks where the game is). Then a small window lets you choose each eye's resolution, the
-   frame rate and the field of view; Play starts the game, and the headset switches to it
-   after a few seconds.
+   frame rate, the game's language (Windows' own unless you choose another) and the field of
+   view; Play starts the game, and the headset switches to it after a few seconds.
 
 For the controller to be placed by your hands, turn on hand tracking in the headset and let
 Virtual Desktop forward tracking data to the PC. The Touch controller layout, all settings and
 what to do when something does not work are in [README-PC-VR.md](README-PC-VR.md).
+
+## Common questions
+
+**How do I get the game onto my computer?** This project gives no information on how to get
+games, and this repository does not include any game data.
+
+**Which headsets?** On the headset alone: Quest 3 (the Quest 3S has the same chip and should
+work; nobody has reported it yet). A Quest 2 or Pro has not been tried and is slower. On a
+PC: any headset with an OpenXR runtime on Windows, which is every Quest through Virtual
+Desktop or Steam Link, and PC headsets through SteamVR (Index, PS VR2 with its PC adapter,
+Bigscreen Beyond, Pimax and others have been reported working).
+
+**Do I need a PlayStation controller?** No. The headset's own controllers play, on the
+headset alone and on the PC, and so do other gamepads; see "Playing". A DualSense is still
+the closest to what the game was made for.
+
+**Without Virtual Desktop?** On the PC, yes: with SteamVR as the OpenXR runtime
+([README-PC-VR.md](README-PC-VR.md#valve-index-through-steamvr)). Start SteamVR first, then
+`Play Astro Bot VR.bat`.
+
+**The picture looks like it is "reprojected", whatever I set.** The game draws one frame
+for every two refreshes of the headset, as it does on a PlayStation VR: 60 frames a second at
+120 Hz, 45 at 90 Hz, 36 at 72 Hz, and your head's turning is filled in between. Set the
+headset to 120 Hz for the console's own 60. On a fast PC, "Frames a second, at most" in the
+launcher's window can be raised to the headset's rate.
+
+**The game is in English.** From 0.19 on it takes the language of Windows or of the headset
+(one of the game's 28; English otherwise); the PC launcher's window has a list to choose
+another from.
+
+**The launcher keeps asking for the Visual C++ runtime although it is installed.** Fixed in
+0.19 (it looked in the wrong place when it was started from a 32-bit program), and its
+question now has a "start the game all the same".
+
+**Linux?** There is no Linux build of the PC version. A player reports it running through
+Steam's Proton with WiVRn; their recipe is in
+[README-PC-VR.md](README-PC-VR.md#linux-through-proton-as-reported).
 
 ## Building from source
 
@@ -229,6 +303,11 @@ use it only with software you own and have dumped yourself.
   comes from [Vauzi-17/mesa-tu8](https://github.com/Vauzi-17/mesa-tu8)).
 - [LibOrbisPkg](https://github.com/maxton/LibOrbisPkg), whose PkgTool unpacks game packages
   for the PC launcher.
+- Everyone who reported what went wrong, and those who sent the fix along:
+  [ODevStudio](https://github.com/ODevStudio) for SteamVR and Valve Index support and the
+  desktop's spectator views, [Clodo76](https://github.com/Clodo76) for finding the game's
+  1.04 executable from inside, [evertec82](https://github.com/evertec82) for what stopped the
+  game under SteamVR.
 - [The Khronos Group](https://www.khronos.org/) for OpenXR and Vulkan,
   [vgmstream](https://github.com/vgmstream/vgmstream) for documenting Sony's audio formats,
   and [Virtual Desktop](https://www.vrdesktop.net/) for the PC streaming path.

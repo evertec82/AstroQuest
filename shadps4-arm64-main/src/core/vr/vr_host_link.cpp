@@ -216,6 +216,12 @@ void HostLink::ReadLoop() {
             if ((pad.flags & Protocol::PadPose::RecenterYaw) != 0) {
                 runtime.ResetPadYaw();
             }
+            if ((pad.flags & Protocol::PadPose::TurnLeft) != 0) {
+                runtime.TurnView(-1);
+            }
+            if ((pad.flags & Protocol::PadPose::TurnRight) != 0) {
+                runtime.TurnView(1);
+            }
             const Vec3 position{pad.position[0], pad.position[1], pad.position[2]};
             if ((pad.flags & Protocol::PadPose::AssumedOffset) != 0) {
                 runtime.SetPadOffset(position);
@@ -223,19 +229,30 @@ void HostLink::ReadLoop() {
             }
             const Vec3 velocity{pad.linear_velocity[0], pad.linear_velocity[1],
                                 pad.linear_velocity[2]};
-            if ((pad.flags & Protocol::PadPose::OrientationValid) != 0 &&
+            const Quat orientation = Normalize(
+                {pad.orientation[0], pad.orientation[1], pad.orientation[2], pad.orientation[3]});
+            const bool held = (pad.flags & Protocol::PadPose::HeldInHands) != 0;
+            if (!held && (pad.flags & Protocol::PadPose::OrientationValid) != 0 &&
                 (pad.flags & Protocol::PadPose::PositionValid) != 0) {
-                // A device fixed to the controller tells everything there is to know.
+                // A device fixed to the controller, or one that is the controller, tells
+                // everything there is to know.
                 DeviceState state;
                 state.pose.position = position;
-                state.pose.orientation = Normalize({pad.orientation[0], pad.orientation[1],
-                                                    pad.orientation[2], pad.orientation[3]});
+                state.pose.orientation = orientation;
                 state.linear_velocity = velocity;
                 state.angular_velocity = {pad.angular_velocity[0], pad.angular_velocity[1],
                                           pad.angular_velocity[2]};
                 state.tracked = true;
                 runtime.UpdatePad(state);
                 break;
+            }
+            // Nothing tells everything (any more): a controller that was a tracked device a
+            // moment ago is placed by what else is known of it from here on. Without this it
+            // would stay where that device was last seen for as long as no motion sensor of
+            // its own speaks up, which for a controller that has none is for good.
+            runtime.ReleasePad();
+            if (held && (pad.flags & Protocol::PadPose::OrientationValid) != 0) {
+                runtime.UpdatePadHeldOrientation(orientation);
             }
             if ((pad.flags & Protocol::PadPose::PositionValid) != 0) {
                 runtime.UpdatePadPosition(position, velocity);

@@ -38,6 +38,133 @@ finds none (`README-PC-VR.md`). The folder it unpacks is also what the headset n
 longer stays silent after Virtual Desktop took its sound device away and brought it back
 (`README-PC-VR.md`).
 
+**App 0.14 (2026-10-04): startup field-of-view menu.** Each normal launch now shows a popup in the
+headset before starting the game. Choose 50–120% with Left / Right on the gamepad's D-pad or
+left stick, then press X / A to play. The last choice is remembered; `fov=` in `vrhost.txt`,
+when present, supplies the initial choice instead. The popup explains how a narrower render
+projection improves pixels per degree at the same resolution and shows the approximate
+horizontal angle and average density gain. Below 100%, each eye gets a feathered squircle
+(pillowed rectangle) border in the host's existing frame-copy pass. The compositor still
+handles lens distortion. At 100% and above there is no added mask. Headless dry-start tests
+use the configured FOV without waiting for input.
+
+**App 0.15 (2026-10-04): FOV is relative to the user's headset.** The slider now runs from
+50–100%, with 100% filling the headset's own field of view. The host reads its projection
+from OpenXR before allowing Play, and passes those full-size optics to the emulator before
+the game starts. The angle and PPD estimate use that detected FOV. Reduced settings retain
+the soft squircle border; the initial default is still 85%.
+
+**App 0.16 (2026-10-04): align the reduced-FOV apertures with the eyes.** The squircle now
+uses the submitted frame's projection to locate straight ahead in each eye texture, instead
+of assuming both optical axes sit at the texture midpoint. The detected Quest projection is
+asymmetric, so the old masks pointed outward and curved inward over different parts of the
+binocular scene. The corrected masks follow the optical axes while preserving the game's
+stereo projections and the headset-relative slider. Invalid eye-separation measurements are
+also ignored. Validation includes asymmetric shader checks at 50%, 85% and 95%, and a
+captured 50% stereo scene whose distant features match the reported projection to within
+one pixel.
+
+**App 0.17 (2026-10-04): restore matching binocular coverage at reduced FOV.** Centering the
+masks in 0.16 did not fix the unequal inward and outward render bounds introduced in 0.15.
+The Quest host now opts into a symmetric render envelope enclosing the detected headset
+projection, then scales that envelope for the chosen FOV. Both eyes have the same angular
+aperture and squircle boundary. At 100% the envelope covers both full native frusta; OpenXR
+clips the excess to the actual headset view. The popup reports visible coverage after that
+clipping and the pixel-density gain at the center. Raw headset detection remains unchanged.
+Regression checks compare the same angular directions in both eyes, including directions
+that were visible in one eye and black in the other at 50% in 0.15 and 0.16.
+
+**App 0.18 (2026-10-06): what the reports on GitHub brought.** The first release since 0.13:
+it has the field-of-view menu and the fixes of 0.14 to 0.17 above, and
+
+- **the game's version 1.04 plays.** An updated copy of the game stopped at "Adjust your
+  position until you fit roughly inside the silhouette", over a green picture: from its
+  first update on, the game asks the tracker to find the controller anew there and waits to
+  see the controller's status go from calibrating back to tracking, which the emulator's
+  tracker never said. It does now. The updated executable is laid out differently as well,
+  and is known now next to the disc's: the game's own speed and the choice of its picture's
+  size apply to both (core.log says `CUSA12392 in a build known from inside: ...`). The game
+  with its update can be one folder, or the update in a folder of its own beside the game's:
+  `/data/local/tmp/astro/games/CUSA12392-UPDATE` (see "The game's versions" in
+  `README-PC-VR.md`). Tried on the headset without wearing it, into a level.
+- A microphone the app was once refused: the app asks again at its next start; if the
+  headset no longer shows the question, allow it in the headset's Settings, under the app
+  permissions for the microphone, for "Astro VR Host". core.log says what the game hears
+  ("Microphone: the loudest of the last 10 seconds was ...").
+- **more controllers than the DualSense.** The app was made for a DualSense and took
+  everything else for a lesser one. Now (all of it under "Controllers" below):
+  - **the headset's own controllers play the game**, for whoever has no gamepad. The app
+    reads them through the headset's runtime, with where they are and how they point; the
+    right one is the controller in the game.
+  - with a gamepad and the headset's controllers both at hand, **the game is played with the
+    one used last**.
+  - **the start-up menu takes whatever is in the player's hands**: a stick to a side chooses,
+    ✕ / A or a trigger starts the game.
+  - **a gamepad without motion sensors is turned and tilted in the game by the hands that
+    hold it.** Before, it followed the hands to where they were and kept pointing straight
+    ahead, which left the game's gadgets nothing to aim with.
+  - **what the game wants done on the touchpad is on buttons**, on the headset's
+    controllers and on every gamepad that has no touchpad: the right trigger (R2) presses
+    it, the right grip (R1) swipes forward, the left trigger (L2) pulls back and lets go,
+    which is the catapult at the end of every level. A card in the headset says so when the
+    game starts and whenever OPTIONS is pressed. (The first worn try of this version ended
+    at that catapult: the stick alone did not shoot it. The game looks at the pad once for
+    every frame it draws, thirty times a second here, and a stick is at its end before it
+    has looked twice: the pull began, for the game, where it ended.)
+  - **the right stick as the touchpad's finger** is one the game can follow now: it stays
+    where it comes down until the game has seen it there, moves no faster than a finger
+    does, and lifts where the stick was let go. A button that presses the touchpad touches
+    it as well.
+  - smaller things for gamepads that are not PlayStation's: a right stick that reports on
+    other axes, triggers that are only buttons, a Back button the system would take for its
+    own "back" and close the app with.
+
+  Played in the headset: the headset's own controllers, from the start-up menu into a level
+  (seen all of the time, the game played with them). The buttons for the touchpad came after
+  that session, which ended at the catapult; they have been played with on the PC, where
+  they are the same code, and the catapult goes off there. On the headset they were checked
+  without wearing it: what the game is given of a pull, a swipe and a press, read by read
+  (see "Testing on the headset without wearing it"). **Not tried: a gamepad other than a
+  DualSense**, and with it hands that turn a gamepad without motion sensors.
+
+What else is new is for the PC (`README-PC-VR.md`): SteamVR and other PC headsets, a view
+for spectators on the monitor, a gamepad in the game that can be moved where nothing tracks
+it, an easier catapult with a stick, blowing with buttons.
+
+**App 0.19 (2026-10-06): what players wrote elsewhere** (the project's thread on Reddit, the
+comments under the videos about it).
+
+- **The game speaks the headset's language.** It was in English whatever the headset was set
+  to: the emulator's console was set to English and nothing offered another. The app now
+  tells the emulator the language the headset is set to, and the game takes it as it takes a
+  PlayStation's, if it has it (28 languages; English otherwise). `language=` in the settings
+  names another. Tried on the PC, where the same emulator shows the game's first screens in
+  French, Japanese and Arabic; on the headset, without wearing it.
+- **Turning the view by steps**, for whoever sits where they cannot turn round (the game has
+  things behind the player, and expects them to look): the left grip held (L1 on a gamepad;
+  the right grip with `pad_hand=left`), each flick of the right stick to a side turns the
+  view 30 degrees that way. The turn is about the head: the player stays where they are in
+  the game and faces another way, and the controller comes round with them. The game is
+  told nothing; to it, the player has turned. A reset of the view faces them straight ahead
+  again. `turn=45` for another step, `turn=0` for none. The card that names the buttons has
+  a line for it. Tried on the PC against a simulated headset (the view turns, the head stays
+  where it is); **not worn**.
+
+What else is new is for the PC: a launcher that no longer asks for a runtime that is
+installed, and a gamepad and the headset's controllers that take turns there too.
+
+**App 0.20 (2026-10-06): two things in world 2**, both in the emulator and so the same on the
+PC.
+
+- **An invisible wall at the end of level 2-1** (issue #16): the collisions of the last two
+  islands were most of a block above what was drawn. See "A time step that changes, and the
+  collisions the game moves" under "Speed".
+- **Squares in the lava's glow around the octopus** at the end of world 2. See "One surface
+  as two targets of a draw" under "The picture".
+
+Both were found and tried on the PC, in the headset through Virtual Desktop. The Quest app
+has the same emulator code; it had not been run on a headset when this went out.
+
 **App 0.8 (2026-10-03)**, after the fourth session (levels 1-1 to 1-3 played, the game stopped
 on entering 1-4 twice):
 
@@ -67,10 +194,12 @@ Quest 3
    ├─ shows the stereo frames as a projection layer; the compositor reprojects them to the
    │  current head pose every refresh, like PSVR's own reprojection did
    ├─ sends the head pose (and lens distance) to the core every display refresh
-   ├─ maps a Bluetooth DualSense to the DualShock 4 the game expects: buttons, sticks,
-   │  triggers, touchpad and motion sensors in; rumble and light bar colour out
-   ├─ places that controller in the game: from the hands the headset sees holding it when it
-   │  can, otherwise at a fixed spot in front of the player, turned by its motion sensors
+   ├─ makes the DualShock 4 the game expects of what the player holds: a gamepad paired with
+   │  the headset (of a DualSense everything: buttons, sticks, triggers, touchpad and motion
+   │  sensors in; rumble and light bar colour out) or the headset's own controllers
+   ├─ places that controller in the game: one of the headset's own is where it is; a gamepad
+   │  is where the hands are that the headset sees holding it (otherwise at a fixed spot in
+   │  front of the player), turned by its motion sensors or, where it has none, by the hands
    ├─ plays the sound (one audio stream per port the game uses)
    └─ starts the emulator core as a child process ──► shadps4 (aarch64 Linux, glibc)
                                                        ├─ FEX runs the game's x86-64 code
@@ -104,15 +233,13 @@ adb install -r build/quest/astro-vr-host.apk
 adb push games/CUSA12392 /data/local/tmp/astro/games/        # 13 GB, a few minutes
 ```
 
-Pair the DualSense with the headset (Settings ▸ Bluetooth; hold Create + PS until the light bar
-flashes), then start **Astro VR Host** from the app library (Unknown Sources). A floating panel
-reports what the app is doing, and which controller it found, until the game's first frame arrives.
-(The headset's own controllers count as gamepads too, and were what the app took for the
-controller in the third session: the game then gets buttons and sticks from the DualSense but
-neither its motion sensors nor rumble or light bar. From 0.7 on a controller of Sony's make goes
-first whenever it shows up, and the controller is the one input actually comes from.)
-Put the Touch controllers aside: with them out of the way the headset tracks your hands, which is
-what places the DualSense in the game.
+To play with a gamepad, pair it with the headset (Settings ▸ Bluetooth; on a DualSense, hold
+Create + PS until the light bar flashes); the headset's own controllers need nothing. Then start
+**Astro VR Host** from the app library (Unknown Sources). A floating panel reports what the app
+is doing, and what the game will be played with, until the game's first frame arrives.
+With a gamepad, put the Touch controllers aside: with them out of the way the headset tracks
+your hands, which is what places the gamepad in the game. See "Controllers" below for what
+plays how.
 
 In the game:
 
@@ -120,15 +247,16 @@ In the game:
   front of you, where the outline is. (If the headset does not see your hands, the controller is
   assumed to be there and the screen passes on its own.)
 - The world map is selected by **looking** at a planet and pressing ✕.
-- Touchpad: the DualSense's own. If the system does not hand it over, the right stick stands in
-  for the finger (flick it) and Create for the click.
+- Touchpad: the DualSense's own. Without one, the right stick is the finger and Create / Back /
+  View the press (see "Controllers").
 - **Resetting the view**: hold OPTIONS for a second (as on a PlayStation VR), or press the PS
-  button. Where your head is then is where you sit as far as the game goes, and the way you face
-  is straight ahead; the controller's heading is taken anew as well. The app does it by itself
-  when ✕ is pressed for the first time, and when the headset's own "reset view" is used (hold the
-  Meta button). Do it again whenever you have settled differently and things are too close, too
-  far or off to a side: the game takes its bearings only when it is told to (see "Where the
-  player sits").
+  button; with the headset's own controllers, hold the left one's menu button for a second or
+  press both sticks in. Where your head is then is where you sit as far as the game goes, and
+  the way you face is straight ahead; the controller's heading is taken anew as well. The app
+  does it by itself when ✕ is pressed for the first time, and when the headset's own "reset
+  view" is used (hold the Meta button). Do it again whenever you have settled differently and
+  things are too close, too far or off to a side: the game takes its bearings only when it is
+  told to (see "Where the player sits").
 - Taking the headset off pauses the game; putting it back on resumes it.
 - If the headset's boundary lights up, you are near its edge: besides being in the way, the
   boundary costs the GPU time the game needs. A boundary with more room around the seat avoids
@@ -144,17 +272,22 @@ Optional settings go in `/sdcard/Android/data/com.astrobotquest.vrhost/files/vrh
 | `resolution=960` | the size the game draws its scene at, per eye: `816` (x870), `960` (x1080), `1200` (x1280), `1440` (x1536), or `game` for the game's own choice. Default: the emulator chooses, as large as the GPU manages at the pace, see "Speed" |
 | `antialias=0` | leave edges as jagged as the game draws them without multisampling. Default: the emulator smooths them, see "The picture" |
 | `real_time=0` | let the game count time in frames as on the console: slow motion whenever a frame takes longer than 1/60 s. Default: the emulator has it run by the clock, see "Speed" |
-| `hands=0` | do not use hand tracking; the controller stays at its fixed spot |
+| `hands=0` | do not use hand tracking; a gamepad stays at its fixed spot |
+| `own_controllers=0` | never play with the headset's own controllers, whoever holds them |
+| `pad_hand=left` | with the headset's own controllers, the left one is the controller in the game instead of the right one |
+| `language=fr-FR` | the language the game is played in, as a language tag (`fr-FR`, `de-DE`, `pt-BR`, `ja-JP`...). Default: the one the headset is set to. The game has 28; it is in English for any other |
+| `turn=45` | how many degrees the view turns for each flick of the right stick with the left grip (or L1) held (default 30; `0`: never) |
+| `pad_tilt=-15` | for a gamepad without motion sensors, which the hands holding it turn and tilt in the game: how many degrees higher (lower, if negative) its front points than the hands do (-60 to 60). For a gamepad that points too high or too low in the game |
 | `sharpen=0` | no sharpening of the picture. Default 1: the emulator sharpens every frame of the game once. 2: the headset's Super Resolution filter on every refresh instead (finer; about a twentieth of the GPU's time). 3: that filter whenever the system finds the GPU has time for it (in a level: hardly ever). 4: the headset's plainer filter. See "The picture" |
 | `cubic=1` | have the headset enlarge the picture with a cubic filter instead of a linear one (sharper, for some GPU time on every refresh) |
 | `stick_touchpad=0` | right stick no longer doubles as a finger on the touchpad |
-| `motion=0`, `rumble=0` | ignore the motion sensors / no vibration |
+| `motion=0`, `rumble=0` | ignore the gamepad's motion sensors (the hands holding it then say how it is turned, as for a gamepad that has none) / no vibration |
 | `msaa=4` | let the game multisample as on the console (default 1 = off, much faster) |
 | `stats=1` | keep a small panel in view with the game's frame rate, the display's refresh rate and whether the hands holding the controller are seen |
 | `predict_ms=25` | how far beyond the next refresh the head pose given to the game is predicted (0–80). More if the picture's edges show when turning the head, less if the world wobbles |
 | `dynamic_resolution=0` | do not ask the system what size it recommends for the picture (which may cost the GPU its fastest clock). `2`: also show the picture at that size, as up to version 0.6. Default: ask, and show the picture at full size, see "The picture" |
 | `cpu_boost=0` | do not ask for the processor's "boost" level (its fastest clock, which the system grants for the first 45 seconds and up to a fifth of the time after) |
-| `fov=100` | how much of PlayStation VR's field of view the game draws, in percent (50–120). **Default 85 since app 0.9**: about 91 by 94 degrees an eye instead of 100 by 103, the same pixels over fewer degrees, so 18% more of them to the degree, with a black border where the rest was (it costs the GPU nothing). `100` is what the game draws on a PlayStation VR (50.4°/49.8° out/in, 51.6° up and down an eye); `80` or `75` sharper still and narrower. host.log says what was used ("the game draws 85% of PlayStation VR's field of view") |
+| `fov=100` | Initial choice in the startup FOV menu, from 50–100% of the user's headset projection tangents. The last menu choice is used when this setting is absent; the first-launch default is 85. `100` fills the runtime-reported headset FOV and adds no mask. Lower values render the same pixels over fewer degrees, with a soft squircle border around each eye. The menu's angles and average PPD gain are calculated from this headset's detected optics; the chosen FOV is logged in host.log and core.log. |
 | `mic=0` | the game does not get to hear the headset's microphone (see "Microphone") |
 | `mic_gain=2` | make what the game hears that many times louder (0.1–30) |
 | `arg=...`, `env=NAME=value` | extra emulator argument / environment variable |
@@ -170,6 +303,84 @@ What a session leaves behind, in the same folder as `vrhost.txt`:
 `adb pull /sdcard/Android/data/com.astrobotquest.vrhost/files/host.log` fetches one; they are
 what to look at (or send along) when something did not work. `adb logcat -s AstroVR` shows the
 host's log live. The emulator's own folder (saves, `sys_modules`) is `.../files/data/shadPS4/`.
+
+## Controllers
+
+The game is played with one DualShock 4, which the app makes of what the player holds.
+
+**A DualSense** (or a DualShock 4, which the headset's system knows the same way; untested) has
+everything the game uses: its touchpad, its motion sensors for how it is turned, rumble and
+light bar. Where it is in the game is where the headset sees the hands that hold it.
+
+**Other gamepads** (the headset's system has drivers and key layouts for Xbox controllers,
+8BitDo, Logitech, Razer, PDP, Hori and others; nothing but a DualSense has been tried) lack
+two things the game is built around, which are made up for:
+
+- *the touchpad.* The game asks three things of it, and each is on a button the game has no
+  use for while it is played (it is still told of them: a few of its menus have):
+  - **R2, the right trigger: the pad pressed**, for as long as the trigger is pulled. The
+    water cannon and the machine gun fire that way.
+  - **R1: a swipe forward**, once for each press. That shoots the hook, throws the stars,
+    opens the chests.
+  - **L2, the left trigger: a pull back**, held while the trigger is and let go when it is.
+    That is the catapult at the end of every level (point the controller at the goal: the
+    game only shoots within 25 degrees of it), and it pulls on the hook's rope.
+
+  A card in the headset names them when the game starts and again whenever OPTIONS is
+  pressed, which is the game's pause. Besides them the right stick, for which this game has
+  no use either, moves a finger over the pad for anything else: the finger comes down behind
+  the pad's middle, is dragged the way the stick is pushed, and lifts where the stick is let
+  go (not back in the middle, where a stick flies to). The Create / Back / View button
+  presses the pad. (`stick_touchpad=0` leaves the stick a stick.)
+
+  Why buttons, and why the finger is slow: the game looks at the pad once for every frame it
+  draws, thirty times a second in a level here, and makes a pull or a swipe of where it saw
+  the finger first and last. A stick is at its end within a few hundredths of a second, and
+  a finger that follows it there has not moved at all as far as the game can tell. So every
+  finger the app moves stays where it lands until the game has seen it, goes no faster than
+  a real one flicks, and lifts only when the game has seen it at its end.
+- *the motion sensors*, by which the game knows how the controller is turned: its gadgets aim
+  with it. The hands holding the gamepad stand in: the line from one palm to the other is the
+  gamepad's sideways axis, which gives how it is turned and how far it is rolled, and the way
+  the hands point is how far its front is tilted up or down. That is as steady as the
+  headset's view of two hands around a gamepad, and off by however a gamepad's shape has the
+  hands point: `pad_tilt=` moves it if it points too high or too low in the game. Motion
+  sensors of gamepads that are not PlayStation's are not used even where the system offers
+  them: which way is up for a motion sensor is each maker's own affair. (`motion=0` has a
+  DualSense go by the hands as well. For a gamepad that has both, `host.log` says every ten
+  seconds how far the two are apart: "hands against the gamepad's motion sensors".)
+
+**The headset's own controllers**, for whoever has no gamepad. The app reads them through the
+headset's runtime, which says where they are and whether anybody holds them (the gamepad the
+system makes of them for other apps says neither, and is ignored):
+
+| On the controllers | In the game |
+| --- | --- |
+| the right controller, where it is and the way it points (`pad_hand=left`: the left one) | the controller |
+| left stick, pressed in | left stick, L3 |
+| A, B (right) | ✕, □ |
+| X, Y (left) | ○, △ |
+| X and Y together | blowing into the microphone, for as long as they are held |
+| right trigger | the touchpad pressed, while it is pulled (water, guns); also R2 |
+| right grip | a swipe forward on the touchpad (hook, stars, chests); also R1 |
+| left trigger | a pull back on the touchpad, let go when the trigger is (the catapult); also L2 |
+| left grip | L1; held, the right stick flicked to a side turns the view a step (see "Where the player sits") |
+| right stick | a finger on the touchpad, as on a gamepad without one |
+| right stick pressed in | the touchpad pressed |
+| menu button (left) | OPTIONS; held for a second, it resets the view |
+| both sticks pressed in | resets the view |
+
+(With `pad_hand=left` the trigger and the grip that press and swipe are the left ones, the
+right trigger pulls, and the right grip turns the view.) Both controllers shake with the
+game's rumble, the left one more with the heavy motor and the right one more with the light
+one.
+
+**With a gamepad and the headset's controllers both at hand, the game is played with the one
+that was used last**: a button on the other takes over, and `host.log` says so. From a
+gamepad, only what a hand cannot do without a controller in it takes over (a button under a
+thumb, a stick): while a gamepad is held it is the hands the headset sees, and their pinching
+must never count. The start-up menu takes either: a stick to a side chooses, ✕ / A or a
+trigger starts the game, and what started it is not pressed in the game.
 
 ## Where the player sits
 
@@ -193,6 +404,15 @@ when OPTIONS is held for a second or the PS button is pressed, and when the head
 is used. `core.log` says each time where the seat is, and every ten seconds where the game takes
 the player to sit and where the head is from there.
 
+**Turning round without turning** (0.19) is the seat turned about the head, 30 degrees for
+each step (`Runtime::TurnView`): the head keeps its place in the game's world and faces
+another way, a controller the headset sees is placed anew from the turned seat, and one it
+does not see keeps its place before the player. The game is not told: a player on a swivel
+chair would look the same to it. The steps are asked for with a button the game has no use
+for in play, held, and the right stick flicked to a side (the left grip, or L1; see
+"Controllers"), and are undone by the next reset of the view. `core.log` says each one
+("The view turns a step to the right: ...").
+
 ## Speed
 
 **The game counts time in frames.** It moves its world on by a sixtieth of a second for every
@@ -204,6 +424,22 @@ rate; `src/core/known_title.cpp`). Slowed down to 43, 30 and 22 frames a second,
 then follows the same course to the second as at 60, and a scripted walk through the first level
 has the hero in the same places at the same moments. Below 20 frames a second the game slows
 down rather than take steps its physics were never tried with. `real_time=0` turns this off.
+
+**A time step that changes, and the collisions the game moves.** One thing in the game did
+depend on every frame's step being the same. The collisions of whatever moves (a platform, a
+door, a part of a level that rises) are bodies the game sends to a place: the physics library
+gives the body the speed that takes it there in one step, worked out with the time step of
+the step it last took, and the next step moves it by that speed times the new time step.
+With two different time steps the body lands off by its way times their difference. For what
+moves all the time that is put right a frame later. For what is sent once it stays, and
+levels do that: they sleep by sections, and a section that wakes sends all its bodies in one
+frame from where they slept to where the level has moved since. The last two sections of
+level 2-1 wake at the top of a tree that carried them 17 units up while they slept: their
+collisions ended most of a block above what was drawn, an invisible wall before the last
+enemy (issue #16). The function that takes the step is changed in the game's image, in both
+versions of the game, to step with the time step the bodies were sent with
+(`src/core/known_title_builds.h`, `PhysicsStepChanges`); bodies then land where they are sent
+to the last digit, across hitches too.
 
 **Two refreshes for a frame, or three.** The game draws a frame for every two refreshes of its
 headset (60 frames for the 120 Hz of a PlayStation VR) when it manages. When a frame takes
@@ -431,6 +667,20 @@ the headset's GPU has in it for this game (a frame of the first level is 4 to 8 
 vertices in 750 to 2500 draws, 20 to 30 ms of GPU time at the smallest size); the picture is
 now close to the console's at its smaller sizes.
 
+**One surface as two targets of a draw.** The glow of the lava around the octopus of world 2
+had squares in it, lit and dark, for as long as he moved. The game draws the rings that glow
+into a quarter-size buffer which it has bound twice for those draws: as target 0, where the
+colour is blended in, and as target 1, where alpha is written without blending. The console's
+GPU writes both to the same memory. Vulkan leaves undefined what an image holds that was two
+attachments of one render pass, and what it held was the draw in some blocks of 4x8 texels
+and not in others. The emulator now makes such a draw once for every target that shares a
+surface, with the others left out (`Rasterizer::SharedTargetPasses`). A scripted run gets to
+the same octopus through the challenge "10 - Second Date" (with a save that has world 2
+done): in the world select the challenge belt is chosen by looking 90 degrees to the right,
+the challenge is three steps of the stick to the right, and the gadget chest at its start
+takes the controller about 0.3 m below and 0.55 m ahead of the head;
+`tools/pc-dump-test.sh` then keeps every render target of a frame of the fight.
+
 ## Sound
 
 The game does all its sound through Sony's Ngs2 library, which the emulator only had as an empty
@@ -503,6 +753,7 @@ game does with time and with the head, on a machine that is fast enough for anyt
 | `SHADPS4_VR_REFRESH_RATE=<Hz>` | how often the emulated headset refreshes (60 to 120); the game draws half as many frames |
 | `SHADPS4_VR_PACE=<2..6>` | how many of those refreshes every frame is given: 3 at 90 Hz makes 30 frames a second on the dot (without it the emulator chooses, which on a PC is always 2) |
 | `SHADPS4_TITLE_TIMESTEP=0`, `SHADPS4_TITLE_RESOLUTION=<3..6 or title>` | the game's time step left alone; its scene held to one size (3 = 816x870 ... 6 = 1440x1536) or left to the game |
+| `SHADPS4_TITLE_PHYSICS_STEP=0`, `SHADPS4_TITLE_PHYSICS_WATCH=1` | the game's physics step left as the console has it (collisions that are moved then land off, see "Speed"); a line in the log every ten seconds on how far the bodies the game sent somewhere ended from there |
 | `SHADPS4_MAX_MSAA=<1, 2, 4>` | the most samples a pixel gets; 1 is what the headset runs with, and has the emulator smooth edges itself unless `SHADPS4_RESOLVE_AA=0` |
 | `SHADPS4_VR_SHARPEN=<0..1>` | how much the eyes' pictures are sharpened on their way out (the app sets 0.6) |
 
@@ -546,6 +797,9 @@ Settings of `quest-selftest.sh` that make it more like one (given like the core'
 | `HOST_COMPOSITOR=<Hz>[,<n>[,<Mpx>]]` | a stand-in for the compositor: so many times a second a pass the size of the compositor's own (9 megapixels) and n - 1 small ones (n = 5), on a GPU context that comes before the emulator's. With it the GPU is the limit as in a session |
 | `HOST_DISPLAY=<Hz>` | the test's loop goes round once per refresh of a display of that rate, tells the emulator of each as the app does, and counts for how many refreshes each frame of the game stayed the newest |
 | `HOST_LOOK="<s>:<left>,<up>;..."` | where the head looks from which second on (degrees); `8:85,22;110:0,-12` finds the first level from the world map and then looks along it |
+| `HOST_PAD="<s>:<kind>,<right>,<up>,<ahead>,<left>,<tilt>,<roll>;..."` | what the app says of the controller from which second on, the way a session does: `c` one of the headset's own controllers (it says everything of itself), `h` hands around a gamepad without motion sensors, `p` hands around one that has them (only where it is), `n` nothing seen; where it is in metres from the head, how it is turned in degrees. With `HOST_LOOK=0:0,-18` the controller is in the picture |
+| `HOST_TURN="<s>:<steps>;..."` | the view is turned by so many steps to the right at that second (to the left if negative), as the left grip held and the right stick flicked ask in a session. With `HOST_LOOK=0:0,0` the pictures before and after show the same scene from two sides |
+| `HOST_SHOTS=<s>` | a picture every so many seconds instead of every ten |
 | `XDG_DATA_HOME=<folder>` | where the emulator keeps its data, saves among them. The self-test starts from nothing each time, so the game plays its prologue (four minutes); with a folder that holds a save it is in the first level after 75 seconds |
 | `SHADPS4_VR_FOLLOW_DISPLAY=0` | the emulated headset keeps to its own clock although the host tells of its display's refreshes |
 
@@ -580,9 +834,24 @@ session itself: frames on the display, head and hand tracking, the controller.
 `tools/quest-drystart.sh <seconds> [settings file]` starts the app's own activity without showing
 it: everything the app does when it is launched runs (settings, log files, OpenXR up to the idle
 session, unpacking the runtime, the emulator with the game, sound), a controller that is not
-there presses ✕ now and then (through the same code a real one's events go through), and the
-`host.log` and `core.log` the app writes are pulled to `build/quest/drystart/` together with
-pictures of what its status panel showed.
+there presses ✕ now and then (through the same code a real one's events go through), pulls
+its right stick back once and presses R1 once, and the `host.log` and `core.log` the app
+writes are pulled to `build/quest/drystart/` together with pictures of what its status panel
+showed, of the start-up menu and of the controls cards.
+
+`SHADPS4_PAD_TOUCH_TRACE=1` (as `env=` in a settings file for the dry start, or as a setting of
+`quest-sandbox-test.sh`, whose input scripts can press the gesture buttons with
+`gesture=press`, `gesture=swipe` and `gesture=pull` and move the stick's finger with
+`finger=x,y`) has core.log say what the game was given of the touchpad at each of its reads,
+for as long as a finger was on it: where the game saw a touch begin and end, and over how
+many reads, is what it makes its swipes and pulls of.
+
+`quest-host/build.sh --test-package` builds the same app under another name
+(`com.astrobotquest.vrhost.test`, "Astro VR Host (test)", `build/quest/astro-vr-host-test.apk`).
+It installs next to the app proper and touches neither it nor its saves: for trying a build on
+a headset whose owner plays with the other one. `ASTRO_PACKAGE=com.astrobotquest.vrhost.test`
+before `quest-xrprobe.sh`, `quest-drystart.sh`, `quest-selftest.sh` or `quest-sandbox-test.sh`
+runs them in it; `adb uninstall com.astrobotquest.vrhost.test` removes it again.
 
 ## Watching a real session
 

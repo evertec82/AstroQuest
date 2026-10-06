@@ -239,6 +239,12 @@ s32 PS4_SYSV_ABI sceHmdReprojectionStart(const OrbisHmdReprojectionParam* param,
                  frame_number, flip_arg, left.width + 1, left.height + 1, left.Address(),
                  frame.eye_textures[1].Address(), frame.fov.tan_out, frame.fov.tan_in,
                  frame.fov.tan_top, frame.fov.tan_bottom, param->unknown_40, param->flags, option);
+        LOG_INFO(Lib_Hmd,
+                 "eye UV: left scale {:.6f}/{:.6f}, offset {:.6f}/{:.6f}; "
+                 "right scale {:.6f}/{:.6f}, offset {:.6f}/{:.6f}",
+                 param->uv[0].scale_x, param->uv[0].scale_y, param->uv[0].offset_x,
+                 param->uv[0].offset_y, param->uv[1].scale_x, param->uv[1].scale_y,
+                 param->uv[1].offset_x, param->uv[1].offset_y);
     }
 
     Core::GuestCpu::NoteGuestProgress();

@@ -19,6 +19,8 @@
 #include "core/vr/vr_runtime.h"
 #include "input/controller.h"
 #include "input/scripted_input.h"
+#include "input/pad_gestures.h"
+#include "input/stick_finger.h"
 
 namespace Input {
 
@@ -27,6 +29,7 @@ namespace {
 using Buttons = Libraries::Pad::OrbisPadButtonDataOffset;
 
 std::atomic<float> microphone_level{0.0f};
+std::atomic<bool> blowing{false};
 
 struct Step {
     double start;
@@ -42,6 +45,16 @@ struct Step {
     bool hands_lost{};
     // A finger on the touchpad, 0..1 across and down.
     std::optional<std::array<float, 2>> touch;
+    // The right stick as it stands in for that finger (Input::StickFinger), -1..1 to the right
+    // and towards the player.
+    std::optional<std::array<float, 2>> finger;
+    // The buttons that do the touchpad's gestures on a controller without one
+    // (Input::PadGestures), held while the line lasts.
+    PadGestures::Controls gestures;
+    // The place a controller that nothing locates is held to be at: moved by so many metres
+    // (right, up, towards the player), or switched between the standard one and the player's.
+    std::optional<Core::Vr::Vec3> place_move;
+    bool place_switch{};
     // What the microphone hears: noise of this loudness (root mean square, 1 is full scale).
     float microphone{};
     bool recenter{};
@@ -151,6 +164,30 @@ std::vector<Step> ParseScript(const std::filesystem::path& script) {
                 }
                 continue;
             }
+            if (token.starts_with("finger=")) {
+                const auto numbers = ParseNumbers(token.substr(7));
+                if (numbers.size() >= 2) {
+                    step.finger = std::array<float, 2>{numbers[0], numbers[1]};
+                }
+                continue;
+            }
+            if (token == "gesture=press" || token == "gesture=swipe" || token == "gesture=pull") {
+                step.gestures.press = step.gestures.press || token == "gesture=press";
+                step.gestures.swipe = step.gestures.swipe || token == "gesture=swipe";
+                step.gestures.pull = step.gestures.pull || token == "gesture=pull";
+                continue;
+            }
+            if (token == "place=switch") {
+                step.place_switch = true;
+                continue;
+            }
+            if (token.starts_with("place=")) {
+                const auto numbers = ParseNumbers(token.substr(6));
+                if (numbers.size() >= 3) {
+                    step.place_move = Core::Vr::Vec3{numbers[0], numbers[1], numbers[2]};
+                }
+                continue;
+            }
             static constexpr std::array<std::string_view, 4> AxisNames = {"lx=", "ly=", "rx=",
                                                                            "ry="};
             for (size_t axis = 0; axis < AxisNames.size(); ++axis) {
@@ -164,7 +201,7 @@ std::vector<Step> ParseScript(const std::filesystem::path& script) {
     return steps;
 }
 
-void Replay(std::vector<Step> steps) {
+void Replay(std::vector<Step> steps, std::filesystem::path live_script) {
     Common::SetCurrentThreadName("shadPS4:ScriptedInput");
     const auto begin = std::chrono::steady_clock::now();
     double last_end = 0.0;
@@ -179,7 +216,20 @@ void Replay(std::vector<Step> steps) {
     Buttons previous_buttons{Buttons::None};
     std::array<int, 6> previous_axes{128, 128, 128, 128, 0, 0};
     std::optional<std::array<float, 2>> previous_touch;
+    StickFinger stick_finger;
+    PadGestures gestures;
+    std::filesystem::file_time_type live_stamp{};
     while (true) {
+        if (!live_script.empty()) {
+            std::error_code error;
+            const auto stamp = std::filesystem::last_write_time(live_script, error);
+            if (!error && stamp != live_stamp) {
+                live_stamp = stamp;
+                steps = ParseScript(live_script);
+                started.resize(steps.size());
+                LOG_INFO(Input, "Live script now has {} steps", steps.size());
+            }
+        }
         const double now =
             std::chrono::duration<double>(std::chrono::steady_clock::now() - begin).count();
 
@@ -189,6 +239,8 @@ void Replay(std::vector<Step> steps) {
         const Step* pad_step = nullptr;
         const Step* hands_step = nullptr;
         std::optional<std::array<float, 2>> touch;
+        std::array<float, 2> finger{};
+        PadGestures::Controls controls;
         float microphone = 0.0f;
         for (const Step& step : steps) {
             if (now >= step.start) {
@@ -211,6 +263,12 @@ void Replay(std::vector<Step> steps) {
             if (step.touch) {
                 touch = step.touch;
             }
+            if (step.finger) {
+                finger = *step.finger;
+            }
+            controls.press = controls.press || step.gestures.press;
+            controls.swipe = controls.swipe || step.gestures.swipe;
+            controls.pull = controls.pull || step.gestures.pull;
             microphone = std::max(microphone, step.microphone);
             buttons |= step.buttons;
             for (size_t axis = 0; axis < step.sticks.size(); ++axis) {
@@ -220,6 +278,18 @@ void Replay(std::vector<Step> steps) {
             }
         }
         microphone_level.store(microphone, std::memory_order_relaxed);
+        // What buttons do on the touchpad comes before what the stick does there.
+        if (const auto made = gestures.Update(now, controls); made.down && !touch) {
+            touch = std::array<float, 2>{made.x, made.y};
+            if (made.pressed) {
+                buttons |= Buttons::TouchPad;
+            }
+            stick_finger.Reset();
+        } else if (const auto stick = stick_finger.Update(now, finger[0], finger[1]);
+                   stick.down && !touch) {
+            // (A stick at rest between its lines: that is what lifts its finger.)
+            touch = std::array<float, 2>{stick.x, stick.y};
+        }
         auto& vr = Core::Vr::Runtime::Instance();
         if (head_step != nullptr) {
             vr.UpdateHead({.pose = *head_step->head, .tracked = true});
@@ -233,6 +303,12 @@ void Replay(std::vector<Step> steps) {
             if (steps[i].recenter) {
                 // The player asks for the view to be reset, wherever the head is right now.
                 vr.RequestRecenter();
+            }
+            if (steps[i].place_move) {
+                vr.MoveOwnPadPlace(*steps[i].place_move);
+            }
+            if (steps[i].place_switch) {
+                vr.SwitchPadPlace();
             }
             if (steps[i].worn) {
                 LOG_INFO(Input, "Scripted: the headset is {}", *steps[i].worn ? "put on"
@@ -271,7 +347,7 @@ void Replay(std::vector<Step> steps) {
             previous_axes = axes;
             previous_touch = touch;
         }
-        if (now > last_end + 1.0) {
+        if (live_script.empty() && now > last_end + 1.0) {
             break;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
@@ -283,7 +359,19 @@ void Replay(std::vector<Step> steps) {
 } // namespace
 
 float ScriptedMicrophoneLevel() {
-    return microphone_level.load(std::memory_order_relaxed);
+    // (0.36: a little above what ASTRO BOT takes for blowing as hard as can be.)
+    return std::max(microphone_level.load(std::memory_order_relaxed),
+                    blowing.load(std::memory_order_relaxed) ? 0.36f : 0.0f);
+}
+
+void SetBlowing(bool blowing_now) {
+    if (blowing.exchange(blowing_now, std::memory_order_relaxed) != blowing_now && blowing_now) {
+        static std::atomic<bool> said{false};
+        if (!said.exchange(true)) {
+            LOG_INFO(Input,
+                     "Blowing with buttons: the game hears it as blowing into the microphone");
+        }
+    }
 }
 
 void StartScriptedInput(const std::filesystem::path& script) {
@@ -293,7 +381,8 @@ void StartScriptedInput(const std::filesystem::path& script) {
         return;
     }
     LOG_INFO(Input, "Replaying {} input steps from {}", steps.size(), script.string());
-    std::thread{Replay, std::move(steps)}.detach();
+    const char* live = std::getenv("SHADPS4_LIVE_INPUT");
+    std::thread{Replay, std::move(steps), std::filesystem::path{live ? live : ""}}.detach();
 }
 
 } // namespace Input

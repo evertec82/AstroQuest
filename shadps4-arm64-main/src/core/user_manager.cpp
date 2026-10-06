@@ -97,8 +97,34 @@ enum class TransferOption : s32 {
     Nothing,
     SdlCancelled = -1,
 };
+// Whether the folders an older shadPS4 kept saves and trophies in hold anything.
+static bool HasOldSavesOrTrophies() {
+    std::error_code ec;
+    const auto user_dir = Common::FS::GetUserPath(Common::FS::PathType::UserDir);
+    const auto old_saves = user_dir / "savedata" / "1";
+    if (fs::exists(old_saves, ec) && !fs::is_empty(old_saves, ec)) {
+        return true;
+    }
+    const auto old_trophies = user_dir / "game_data";
+    if (!fs::is_directory(old_trophies, ec)) {
+        return false;
+    }
+    for (fs::directory_iterator it{old_trophies, ec}, end; !ec && it != end; it.increment(ec)) {
+        if (fs::exists(it->path() / "TrophyFiles", ec)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 TransferOption AskMigrationOption() {
     TransferOption user_choice = TransferOption::Nothing;
+    // Nothing to move over, nothing to ask. (The question came at every first start, in a
+    // message box that waits behind the game's window, which a player in a headset never
+    // sees: the game then seemed not to start.)
+    if (!HasOldSavesOrTrophies()) {
+        return user_choice;
+    }
 #ifndef _WIN32
     SDL_MessageBoxButtonData btns[4]
 #else

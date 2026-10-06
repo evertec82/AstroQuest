@@ -13,7 +13,9 @@ export MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*'
 ADB="$LOCALAPPDATA/Android/Sdk/platform-tools/adb.exe"
 # The headset also shows up over the network: name the USB connection.
 export ANDROID_SERIAL=${ANDROID_SERIAL:-$(cat "$(dirname "${BASH_SOURCE[0]}")/quest-serial.local" 2>/dev/null)}
-package=com.astrobotquest.vrhost
+# (ASTRO_PACKAGE: the build made by quest-host/build.sh --test-package, if that is the
+# one to run.)
+package=${ASTRO_PACKAGE:-com.astrobotquest.vrhost}
 stage=/data/local/tmp/astro
 driver=${ASTRO_DRIVER:-runtime/drivers/turnip}
 
@@ -41,5 +43,5 @@ env HOME=\$PWD/home TMPDIR=\$PWD/tmp GLIBC_TUNABLES=glibc.pthread.rseq=0 \
   timeout 120 \$ASTRO_LIB_DIR/libastro_ld.so --library-path \$PWD/runtime/host:\$PWD/$driver \
   --preload \$PWD/runtime/host/libkgsl_compat.so ./$name $* 2>&1
 "
-"$ADB" shell "am instrument -w -e cmd '$command' $package/.SandboxShell" \
+"$ADB" shell "am instrument -w -e cmd '$command' $package/com.astrobotquest.vrhost.SandboxShell" \
   | sed -e 's/^INSTRUMENTATION_RESULT: stream=//' -e '/^INSTRUMENTATION_CODE/d'

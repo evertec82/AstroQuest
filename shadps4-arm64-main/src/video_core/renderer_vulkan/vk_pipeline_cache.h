@@ -78,6 +78,13 @@ public:
 
     const GraphicsPipeline* GetGraphicsPipeline();
 
+    /// The colour targets (a bit each) that the graphics pipelines asked for from now on leave
+    /// out, as if the draw had nothing bound there. For a draw that has one surface bound as
+    /// more than one of its targets, which is drawn once for each (Rasterizer::Draw).
+    void LeaveTargetsOut(u8 targets) {
+        targets_left_out = targets;
+    }
+
     const ComputePipeline* GetComputePipeline();
 
     using Result = std::tuple<const Shader::Info*, vk::ShaderModule,
@@ -130,6 +137,7 @@ private:
     std::array<vk::ShaderModule, MaxShaderStages> modules{};
     std::optional<Shader::Gcn::FetchShaderData> fetch_shader{};
     GraphicsPipelineKey graphics_key{};
+    u8 targets_left_out{};
     ComputePipelineKey compute_key{};
     u32 num_new_pipelines{}; // new pipelines added to the cache since the game start
 

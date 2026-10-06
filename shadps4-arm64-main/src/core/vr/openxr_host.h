@@ -84,6 +84,10 @@ public:
     /// if the runtime does not say.
     std::string AudioOutputName() const;
     std::string AudioInputName() const;
+    /// Sound devices have come or gone: the runtime is asked for the headset's again, shortly.
+    /// (One that streams to a headset has its devices only while it does: asked before, it
+    /// names whatever the system plays on then.)
+    void AudioDevicesChanged();
 
 private:
     OpenXrHost();
