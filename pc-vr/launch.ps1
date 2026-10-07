@@ -72,6 +72,7 @@ Read-Settings
 # The sizes an eye can be drawn at: the console's largest (1440x1536, what a PlayStation 4 Pro
 # draws) and larger, all the same shape.
 $widths = @(1440, 1800, 2160, 2520, 2880, 3240, 3600, 3960, 4320)
+$caps = @("full", "120", "90", "72", "60", "45", "40", "36", "30")
 function EyeHeight([int]$width) { return [int]([math]::Round(1536.0 * $width / 1440 / 8) * 8) }
 # The languages the game has, as Windows names them.
 $gameLanguages = @("en-US", "en-GB", "fr-FR", "fr-CA", "es-ES", "es-419", "de-DE", "it-IT", "nl-NL",
@@ -137,11 +138,14 @@ function Get-VrInstructions([string]$runtime) {
     )
 }
 
-# Full refresh by default; explicit diagnostic modes may select the older governor.
-# Old fps=/pace= settings are ignored. Advanced env= overrides still apply below.
+# The menu chooses pacing; explicitly selected diagnostic modes take precedence.
 function Set-FramePacing {
-    if ([string]::IsNullOrWhiteSpace($env:SHADPS4_VR_PACE)) { $env:SHADPS4_VR_PACE = "1" }
-    $env:SHADPS4_VR_FPS_CAP = ""
+    $selected = Setting "fps" "full"
+    if ($selected -notin $caps) { $selected = "full" }
+    if ([string]::IsNullOrWhiteSpace($env:SHADPS4_VR_PACE)) {
+        $env:SHADPS4_VR_PACE = $(if ($selected -eq "full") { "1" } else { "0" })
+    }
+    $env:SHADPS4_VR_FPS_CAP = $(if ($env:SHADPS4_VR_PACE -eq "1" -or $selected -eq "full") { "" } else { $selected })
     $env:SHADPS4_VR_FASTEST_PACE = "1"
 }
 
@@ -655,7 +659,7 @@ function Show-Menu {
 
     $form = New-Object System.Windows.Forms.Form
     $form.Text = "Astro Bot VR"
-    $form.ClientSize = New-Object System.Drawing.Size(560, 474)
+    $form.ClientSize = New-Object System.Drawing.Size(560, 514)
     $form.StartPosition = "CenterScreen"
     $form.FormBorderStyle = "FixedDialog"
     $form.MaximizeBox = $false
@@ -705,11 +709,16 @@ function Show-Menu {
     & $update
     $y += 46
 
-    # Language.
+    # Frame rate.
+    $label = New-Object System.Windows.Forms.Label
+    $label.Text = "Maximum framerate (FPS)"
+    $label.Font = New-Object System.Drawing.Font("Segoe UI", 9.5, [System.Drawing.FontStyle]::Bold)
+    $label.SetBounds(16, $y, 250, 20)
+    $form.Controls.Add($label)
     $label = New-Object System.Windows.Forms.Label
     $label.Text = "Language of the game"
     $label.Font = New-Object System.Drawing.Font("Segoe UI", 9.5, [System.Drawing.FontStyle]::Bold)
-    $label.SetBounds(16, $y, 520, 20)
+    $label.SetBounds(284, $y, 260, 20)
     $form.Controls.Add($label)
     $y += 24
     $language = New-Object System.Windows.Forms.ComboBox
@@ -721,14 +730,28 @@ function Show-Menu {
     # another is chosen here.)
     $languageBefore = [array]::IndexOf($gameLanguages, (Setting "language" "windows")) + 1
     $language.SelectedIndex = $languageBefore
-    $language.SetBounds(16, $y, 530, 26)
+    $language.SetBounds(284, $y, 260, 26)
     $form.Controls.Add($language)
+    $fps = New-Object System.Windows.Forms.ComboBox
+    $fps.Name = "fps"
+    $fps.DropDownStyle = "DropDownList"
+    foreach ($cap in $caps) {
+        $text = "$cap"
+        if ($cap -eq "full") { $text = "Full framerate (headset refresh)" }
+        if ($cap -eq 60) { $text = "60 (the console's own)" }
+        [void]$fps.Items.Add($text)
+    }
+    $fps.SetBounds(16, $y, 250, 26)
+    $index = [array]::IndexOf($caps, (Setting "fps" "full"))
+    if ($index -lt 0) { $index = 0 }
+    $fps.SelectedIndex = $index
+    $form.Controls.Add($fps)
     $y += 32
-    $pacingText = New-Object System.Windows.Forms.Label
-    $pacingText.Text = "Full refresh: the game targets the headset's refresh rate. Change that rate in SteamVR or Virtual Desktop. Actual frame delivery depends on the scene and PC."
-    $pacingText.SetBounds(16, $y, 530, 44)
-    $form.Controls.Add($pacingText)
-    $y += 48
+    $fpsText = New-Object System.Windows.Forms.Label
+    $fpsText.Text = "Full framerate targets one new frame per headset refresh. Fixed FPS choices use whole refresh intervals (90 Hz: 90 or 45 FPS; 120 Hz: 120, 60, 40 or 30). Set headset refresh in SteamVR or Virtual Desktop. Actual delivery depends on the scene and PC."
+    $fpsText.SetBounds(16, $y, 530, 84)
+    $form.Controls.Add($fpsText)
+    $y += 88
 
     # Field of view.
     $label = New-Object System.Windows.Forms.Label
@@ -811,6 +834,7 @@ function Show-Menu {
     $result = Show-Form $form
     if ($result -ne [System.Windows.Forms.DialogResult]::OK) { return $false }
     Save-Setting "resolution" ($widths[$resolution.Value])
+    Save-Setting "fps" ($caps[$fps.SelectedIndex])
     if ($language.SelectedIndex -ne $languageBefore) {
         Save-Setting "language" ($(if ($language.SelectedIndex -le 0) { "windows" } else { $gameLanguages[$language.SelectedIndex - 1] }))
     }
@@ -917,7 +941,7 @@ foreach ($pair in $extraEnv) {
 # --- what is there ----------------------------------------------------------------------------
 Say "ASTRO BOT Rescue Mission - PC VR" "Cyan"
 if ($env:SHADPS4_TITLE_EYE_WIDTH) {
-    Say ("Each eye up to " + $env:SHADPS4_TITLE_EYE_WIDTH + " x " + (EyeHeight ([int]$env:SHADPS4_TITLE_EYE_WIDTH)) + "; frame delivery targets the headset refresh rate.")
+    Say ("Each eye up to " + $env:SHADPS4_TITLE_EYE_WIDTH + " x " + (EyeHeight ([int]$env:SHADPS4_TITLE_EYE_WIDTH)) + "; " + $(if ($env:SHADPS4_VR_PACE -eq "1") { "full framerate (headset refresh)." } else { "FPS cap: " + $env:SHADPS4_VR_FPS_CAP + "." }))
 }
 $runtime = ""
 if ($env:XR_RUNTIME_JSON) {
@@ -1051,3 +1075,4 @@ if ($null -ne $process.ExitCode -and $process.ExitCode -ne 0) {
     Say "The game was closed."
     Start-Sleep -Seconds 2
 }
+

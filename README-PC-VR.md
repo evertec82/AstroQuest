@@ -55,9 +55,9 @@ It retains upstream game-version 1.00/1.04 support, headset/controller handling,
 selection, snap turning, microphone gain and button-to-blow controls, audio-device handling,
 and the World 2 moving-collision and lava-rendering fixes.
 
-Double-click `Play AstroQuest.bat` to choose maximum per-eye resolution, field of view
+Double-click `Play AstroQuest.bat` to choose maximum per-eye resolution, framerate, field of view
 and the upstream launcher options. Choices are saved in `pc-vr/settings.txt`. Full-refresh
-pacing is the default, with no FPS selector or legacy `fps=` cap. Set headset refresh in
+pacing is the default (`fps=full`); the FPS selector also offers fixed caps. Set headset refresh in
 SteamVR or Virtual Desktop. The resolution list now extends to 3960x4224 and 4320x4608 per
 eye; the runtime may downsample the submitted image to its own swapchain limits. The initial
 resolution remains 3600x3840. For native-frame comparisons, disable Virtual Desktop SSW
@@ -66,8 +66,9 @@ or SteamVR motion smoothing.
 - OpenXR uses a second queue in the same Vulkan graphics family when available, with a
   producer timeline semaphore and copy-completion fence. `SHADPS4_XR_SHARED_QUEUE=1`
   restores shared-queue operation for comparison.
-- Normal launch and `Run Full Refresh Diagnostic.bat` both use full-refresh mode, bypassing
-  adaptive half-rate pacing. This targets one new frame per refresh, but cannot guarantee
+- Normal launch defaults to Full framerate; selecting a numeric FPS cap opts into adaptive
+  pacing with that cap. `Run Full Refresh Diagnostic.bat` forces full-refresh mode regardless
+  of the menu selection, bypassing adaptive half-rate pacing. This targets one new frame per refresh, but cannot guarantee
   native refresh or smooth motion where a frame exceeds its budget.
 - `Run Recovery.bat` opts into adaptive pacing with 15-second full-refresh retries and the
   existing GPU headroom checks and failure backoff. `Run Original Recovery.bat` uses the

@@ -161,16 +161,25 @@ foreach ($assignment in $ast.EndBlock.Statements) {
     }
 }
 
-# Full refresh ignores legacy caps but preserves explicit diagnostic modes.
-$script:settings = [ordered]@{ fps = "30"; pace = "2" }
+# Default/full and fixed caps are distinct; diagnostic overrides take precedence.
+$script:settings = [ordered]@{}
 $env:SHADPS4_VR_PACE = ""
 $env:SHADPS4_VR_FPS_CAP = "30"
 Set-FramePacing
-Check "Full refresh is the default despite old FPS/pace settings" $env:SHADPS4_VR_PACE "1"
-Check "Old/inherited FPS cap is cleared" $env:SHADPS4_VR_FPS_CAP ""
-$env:SHADPS4_VR_PACE = "0"
+Check "Full refresh is the default" $env:SHADPS4_VR_PACE "1"
+Check "Full refresh clears inherited FPS cap" $env:SHADPS4_VR_FPS_CAP ""
+$script:settings = [ordered]@{ fps = "60" }
+$env:SHADPS4_VR_PACE = ""
 Set-FramePacing
-Check "Explicit adaptive diagnostic is preserved" $env:SHADPS4_VR_PACE "0"
+Check "Numeric selection uses adaptive pacing" $env:SHADPS4_VR_PACE "0"
+Check "Numeric selection sets FPS cap" $env:SHADPS4_VR_FPS_CAP "60"
+$env:SHADPS4_VR_PACE = "1"
+Set-FramePacing
+Check "Full-refresh diagnostic overrides numeric selection" $env:SHADPS4_VR_FPS_CAP ""
+$env:SHADPS4_VR_PACE = "0"
+$script:settings = [ordered]@{ fps = "full" }
+Set-FramePacing
+Check "Adaptive diagnostic overrides Full framerate selection" $env:SHADPS4_VR_PACE "0"
 Check "Higher resolution 3960 is offered" ($widths -contains 3960) $true
 Check "Higher resolution 4320 is offered" ($widths -contains 4320) $true
 Check "3960 eye height" (EyeHeight 3960) 4224
@@ -223,7 +232,8 @@ function Show-Form($form) {
     foreach ($control in $form.Controls) {
         Check "Menu bounds contain $($control.Text) $($control.Name)" $form.ClientRectangle.Contains($control.Bounds) $true
     }
-    Check "Menu has no FPS selector" (@($form.Controls | Where-Object { $_.Text -match 'Maximum framerate' }).Count) 0
+    Check "FPS selector includes Full framerate" $form.Controls["fps"].Items[0] "Full framerate (headset refresh)"
+    Check "Menu has FPS selector" (@($form.Controls | Where-Object { $_.Text -eq 'Maximum framerate (FPS)' }).Count) 1
     Check "Menu offers three desktop modes" $view.Items.Count 3
     Check "Menu offers Windows' language and the game's 28" $language.Items.Count 29
     foreach ($control in $form.Controls) {
@@ -233,6 +243,7 @@ function Show-Form($form) {
     }
     Check "Desktop view and crop controls do not overlap" $view.Bounds.IntersectsWith($crop.Bounds) $false
     if ($script:menuAction -eq "choose") {
+        Check "Menu defaults to Full framerate" $form.Controls["fps"].SelectedIndex 0
         Check "Menu defaults to Windows' language" $language.SelectedIndex 0
         $resolution.Value = $widths.Count - 1
         $language.SelectedIndex = 1 + [array]::IndexOf($gameLanguages, "fr-FR")
@@ -280,3 +291,4 @@ Check "Menu saves uncropped image again" (Setting "desktop_crop") "0"
 [System.IO.Directory]::Delete($base, $true)
 "failed: $failed"
 if ($failed -gt 0) { exit 1 }
+

@@ -1,7 +1,7 @@
 # Settings for "Play Astro Bot VR.bat", one key=value a line. Lines starting with # are ignored;
 # what is commented out below shows the value that applies when the line is left out.
 
-# The window at the start (menu=0 to go without it) sets resolution and fov below.
+# The window at the start (menu=0 to go without it) sets resolution, framerate and fov below.
 
 # The width of each eye's picture: 1440 is the console's largest (what a PlayStation 4 Pro
 # draws, 1440x1536); 1800, 2160, 2520, 2880, 3240, 3600, 3960 or 4320 have the game draw that much larger
@@ -12,7 +12,8 @@
 #dynamic=1
 
 # Full-refresh pacing is the default. Set headset refresh in SteamVR or Virtual Desktop.
-# Legacy fps= and pace= entries are ignored; there is no FPS selector in the menu.
+# fps=full targets headset refresh. Numeric FPS choices set a maximum using whole refresh intervals.
+#fps=full
 
 # How much of the headset's field of view the game draws, in percent, 70 to 100: at 100 the
 # picture fills all that the headset shows; less puts the same pixels over fewer degrees, a
