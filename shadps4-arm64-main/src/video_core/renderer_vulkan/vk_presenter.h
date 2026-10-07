@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #pragma once
+#include "core/vr/mirror_limiter.h"
 
 #include <condition_variable>
 #include <span>
@@ -143,6 +144,7 @@ private:
     void SetExpectedGameSize(s32 width, s32 height);
 
 private:
+    Core::Vr::MirrorLimiter mirror_limiter;
     std::optional<float> expected_ratio{1920.0 / 1080.0f};
     u32 expected_frame_width{1920};
     u32 expected_frame_height{1080};

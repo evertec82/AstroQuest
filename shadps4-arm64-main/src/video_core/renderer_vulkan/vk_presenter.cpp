@@ -29,6 +29,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <atomic>
 #include <cctype>
 #include <chrono>
@@ -915,7 +916,17 @@ HmdFrames Presenter::PrepareHmdFrame(std::span<const AmdGpu::Image, 2> eye_textu
     Frame* const local = exported ? nullptr : vr_exporter->AcquireLocal(eye_width * 2, eye_height);
     if (!exported) {
         expected_ratio = crop ? std::nullopt : std::optional{desktop_aspect};
-        frame = GetRenderFrame();
+        static const double window_fps = [] {
+            const char* value = std::getenv("SHADPS4_VR_WINDOW_FPS");
+            const double rate = value ? std::atof(value) : 60.0;
+            const double result = std::isfinite(rate) ? std::clamp(rate, 0.0, 1000.0) : 60.0;
+            LOG_INFO(Render_Vulkan, "Desktop mirror cap: {} FPS (headset rate independent)",
+                     result);
+            return result;
+        }();
+        if (mirror_limiter.Due(std::chrono::steady_clock::now(), local != nullptr, window_fps)) {
+            frame = GetRenderFrame();
+        }
         if (!frame && !local) {
             return {};
         }

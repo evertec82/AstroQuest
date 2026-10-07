@@ -108,6 +108,10 @@
 
 # Extra environment variables for the emulator, as many lines as needed.
 #env=NAME=value
+# Precise guest timers default on; set 0 to compare the original timer path.
+#env=SHADPS4_PERF_PRECISE_TIMERS=0
+# Local headset desktop mirror defaults to 60 FPS; 0 disables, 1000 removes its cap.
+#env=SHADPS4_VR_WINDOW_FPS=60
 resolution=3600
 fps=72
 fov=100

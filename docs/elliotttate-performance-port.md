@@ -18,8 +18,24 @@ The initial condition-variable port's nominal 3-ms timeout took 15-16 ms on this
 ## Kept separate
 
 - Their native 90/120 engine mode is promising, but their 120 measurements use a simulator and game-1.00 offsets. The 90 mode is unmeasured and 1.04 offsets are unverified. It is not enabled here.
-- Their guest HR-timer scheduler addresses the game's 3-ms tick, with broader cancellation/lifetime implications than the presentation timer already in this fork.
 - Parallel texture copies, stream/shader memoization and lock-skipping are not imported wholesale. Their notes document unresolved memory corruption near the parallel-copy/shader-memo work; no causal fix is established.
 - Their 32 presentation polls and high-resolution sleeps overlap with this fork. Their new delivery phase was measured at simulated 120 Hz; this fork retains its phase until a real-runtime comparison.
 
 Startup checks do not establish improved headset gameplay. The existing regular release remains available for comparison.
+
+## Precise guest timers and reduced desktop mirror updates (2026-10-07)
+
+This candidate also adapts their precise guest HR-timer scheduling and mirror-rate limit. Windows HR events of 1.2 ms or longer use a dedicated high-resolution waitable timer thread, with a final 300 microseconds of deadline checking. Short HR timers and ordinary periodic timers retain their existing paths. Timer arm serials reject deleted/replaced events. Weak owner guards and a destruction lock prevent callbacks from accessing deleted event queues; the worker is joined at scheduler shutdown. Unsupported high-resolution timers use the existing asio implementation.
+
+The local headset still receives every available frame. Its desktop spectator/stereo mirror defaults to 60 updates per second. A deadline accumulator preserves an average 60 updates at 72/90/120 Hz instead of rounding down to a divisor of the headset rate. Desktop-only and remote-export presentation remain unrestricted. The simple FPS counter counts game submissions rather than mirror updates.
+
+For comparisons, add lines to `pc-vr/settings.txt` (restart the game):
+
+- `env=SHADPS4_PERF_PRECISE_TIMERS=0`: original guest timer path.
+- `env=SHADPS4_VR_WINDOW_FPS=0`: disable the local headset mirror.
+- `env=SHADPS4_VR_WINDOW_FPS=1000`: effectively remove the mirror cap at normal headset rates.
+- `env=SHADPS4_TIMER_SPIN_US=0`: precise timer sleeping without the final spin (default 300; maximum 5000).
+
+Validation: 100 standalone 3-ms deadlines had 0.9 microseconds median lateness, 16.4 microseconds p95 and 68.5 microseconds maximum on this PC. Ordering, earlier-deadline wakeup, scheduling from callbacks and worker shutdown passed. Mirror tests produced 600 updates in ten seconds for 60/72/90/120/144 Hz sources, and checked disabled-mirror/desktop-only fallback. These are component tests, not headset gameplay measurements.
+
+Three isolated SteamVR startup checks ran for 45 seconds each without a critical log error: precise timers with the 60-FPS mirror, precise timers with the mirror disabled, and original timers with the mirror cap effectively removed. The warm launch preloaded all 27 cached pipelines and compiled none. These checks used an idle headset and do not establish native gameplay FPS or judder improvements.

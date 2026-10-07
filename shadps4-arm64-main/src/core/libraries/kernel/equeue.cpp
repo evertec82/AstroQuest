@@ -1,8 +1,11 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <atomic>
+#include <cstdlib>
 #include <thread>
 #include <magic_enum/magic_enum.hpp>
+#include "common/precise_timer_scheduler.h"
 
 #include "common/assert.h"
 #include "common/debug.h"
@@ -23,6 +26,69 @@ extern void KernelSignalRequest();
 
 static std::unordered_map<s32, EqueueInternal*> kqueues;
 static constexpr auto HrTimerSpinlockThresholdNs = 1200000u;
+
+namespace {
+Common::PreciseTimerScheduler& GuestTimerScheduler() {
+    static Common::PreciseTimerScheduler scheduler{[] {
+        const char* value = std::getenv("SHADPS4_TIMER_SPIN_US");
+        return std::chrono::microseconds{value ? std::clamp(std::atoi(value), 0, 5000) : 300};
+    }()};
+    return scheduler;
+}
+std::atomic<u64> precise_serials{0};
+} // namespace
+
+EqueueInternal::~EqueueInternal() {
+    // A callback holds this lock for the complete access to its owner. Deletion waits for it.
+    std::scoped_lock lock{m_precise_lifetime->mutex};
+    m_precise_lifetime->owner = nullptr;
+}
+
+bool EqueueInternal::SchedulePreciseTimer(u64 id) {
+    auto& scheduler = GuestTimerScheduler();
+    if (!scheduler.Available())
+        return false;
+    std::chrono::steady_clock::time_point deadline;
+    u64 serial;
+    {
+        std::scoped_lock lock{m_mutex};
+        const auto it = std::ranges::find_if(m_events, [id](const auto& event) {
+            return event.event.ident == id &&
+                   event.event.filter == OrbisKernelEvent::Filter::HrTimer;
+        });
+        if (it == m_events.end())
+            return false;
+        serial = it->precise_serial = precise_serials.fetch_add(1, std::memory_order_relaxed) + 1;
+        deadline = it->time_added + it->timer_interval;
+    }
+    std::weak_ptr<PreciseLifetime> lifetime = m_precise_lifetime;
+    return scheduler.Add(deadline, [lifetime, id, serial] {
+        if (const auto guard = lifetime.lock()) {
+            std::scoped_lock lock{guard->mutex};
+            if (guard->owner)
+                guard->owner->TriggerPreciseTimer(id, serial);
+        }
+    });
+}
+
+bool EqueueInternal::TriggerPreciseTimer(u64 ident, u64 serial) {
+    bool found = false;
+    {
+        std::scoped_lock lock{m_mutex};
+        for (auto& event : m_events) {
+            if (event.event.ident == ident &&
+                event.event.filter == OrbisKernelEvent::Filter::HrTimer &&
+                event.precise_serial == serial) {
+                event.TriggerTimer();
+                found = true;
+                break;
+            }
+        }
+    }
+    if (found)
+        m_cond.notify_one();
+    return found;
+}
 
 EqueueInternal* GetEqueue(OrbisKernelEqueue eq) {
     if (!kqueues.contains(eq)) {
@@ -111,6 +177,16 @@ bool EqueueInternal::AddEvent(EqueueEvent& event) {
     if (filter == OrbisKernelEvent::Filter::Timer) {
         return this->ScheduleEvent(id, OrbisKernelEvent::Filter::Timer, TimerCallback);
     } else if (filter == OrbisKernelEvent::Filter::HrTimer) {
+        static const bool precise = [] {
+            const char* value = std::getenv("SHADPS4_PERF_PRECISE_TIMERS");
+            const bool enabled = value == nullptr || std::string_view{value} != "0";
+            const bool available = enabled && GuestTimerScheduler().Available();
+            LOG_INFO(Kernel_Event, "Precise guest HR timers: {}",
+                     available ? "enabled" : "disabled (asio fallback)");
+            return available;
+        }();
+        if (precise && SchedulePreciseTimer(id))
+            return true;
         return this->ScheduleEvent(id, OrbisKernelEvent::Filter::HrTimer, HrTimerCallback);
     }
 

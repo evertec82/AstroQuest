@@ -4,6 +4,7 @@
 #pragma once
 
 #include <condition_variable>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -88,6 +89,7 @@ struct EqueueEvent {
     std::chrono::steady_clock::time_point time_added;
     std::chrono::nanoseconds timer_interval;
     std::unique_ptr<boost::asio::steady_timer> timer;
+    u64 precise_serial = 0;
 
     void Clear() {
         is_triggered = false;
@@ -149,7 +151,10 @@ class EqueueInternal {
 
 public:
     explicit EqueueInternal(OrbisKernelEqueue handle, std::string_view name)
-        : m_handle(handle), m_name(name) {}
+        : m_precise_lifetime(std::make_shared<PreciseLifetime>()), m_handle(handle), m_name(name) {
+        m_precise_lifetime->owner = this;
+    }
+    ~EqueueInternal();
 
     std::string_view GetName() const {
         return m_name;
@@ -181,6 +186,13 @@ public:
     bool EventExists(u64 id, s16 filter);
 
 private:
+    struct PreciseLifetime {
+        std::mutex mutex;
+        EqueueInternal* owner{};
+    };
+    bool SchedulePreciseTimer(u64 id);
+    bool TriggerPreciseTimer(u64 ident, u64 serial);
+    std::shared_ptr<PreciseLifetime> m_precise_lifetime;
     OrbisKernelEqueue m_handle;
     std::string m_name;
     std::mutex m_mutex;

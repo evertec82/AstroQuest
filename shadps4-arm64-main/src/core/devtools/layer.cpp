@@ -272,7 +272,19 @@ void L::DrawAdvanced() {
 }
 
 void L::DrawSimple() {
-    const float frameRate = DebugState.Framerate;
+    using Clock = std::chrono::steady_clock;
+    static auto counted_at = Clock::now();
+    static auto counted_frames = DebugState.gnm_frame_count.load();
+    static float title_rate = 0.0f;
+    const auto now = Clock::now();
+    const float elapsed = std::chrono::duration<float>(now - counted_at).count();
+    if (elapsed >= 0.5f) {
+        const auto frames = DebugState.gnm_frame_count.load();
+        title_rate = static_cast<float>(frames - counted_frames) / elapsed;
+        counted_frames = frames;
+        counted_at = now;
+    }
+    const float frameRate = title_rate >= 1.0f ? title_rate : DebugState.Framerate;
     if (frameRate < 10) {
         PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.0f, 0.0f, 1.0f)); // Red
     } else if (frameRate >= 10 && frameRate < 20) {
