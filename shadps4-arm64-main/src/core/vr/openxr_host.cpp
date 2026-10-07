@@ -5,6 +5,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -22,6 +23,7 @@
 #include <SDL3/SDL_events.h>
 
 #include "common/logging/log.h"
+#include "core/vr/late_frame_wait.h"
 #include "common/polyfill_thread.h"
 #include "common/singleton.h"
 #include "common/thread.h"
@@ -391,6 +393,7 @@ struct OpenXrHost::Impl {
 
     // The title's frames on their way here.
     std::mutex slot_mutex;
+    LateFrameSignal delivered_cv;
     std::array<Slot, NumSlots> slots;
     s32 latest{-1};
     u32 next_slot{};
@@ -478,6 +481,8 @@ struct OpenXrHost::Impl {
     u32 display_frames{};
     u32 reported_delivered{};
     u32 copied_frames{};
+    u32 late_frames{};
+    u32 late_wait_timeouts{};
     u32 head_tracked_frames{};
     u32 palm_samples{};
     float palm_distance{};
@@ -1753,7 +1758,25 @@ struct OpenXrHost::Impl {
             AskAudioDevicesIfDue();
             UpdatePad(pose_time);
 
-            if (const s32 index = TakeFrame(); index >= 0) {
+            s32 taken = TakeFrame();
+            // From elliotttate/AstroQuest: a frame a little late need not become a repeat.
+            // Budget is measured from xrWaitFrame wakeup, not from the start of this wait,
+            // and no Vulkan queue lock is held while the producer is allowed to finish.
+            static const float late_wait_ms =
+                std::clamp(EnvFloat("SHADPS4_XR_LATE_WAIT_MS", 3.0f), 0.0f, 6.0f);
+            if (taken < 0 && late_wait_ms > 0.0f && have_frame &&
+                frame_state.shouldRender == XR_TRUE && refresh_rate > 30.0f) {
+                std::unique_lock lock{slot_mutex};
+                const auto result = WaitForLateFrame(delivered_cv, lock, woke, last_delivery,
+                    refresh_rate, late_wait_ms, [this] {
+                        return latest >= 0 && slots[latest].state == Slot::State::Ready;
+                    });
+                lock.unlock();
+                taken = TakeFrame();
+                if (taken >= 0) ++late_frames;
+                else if (result == LateFrameResult::TimedOut) ++late_wait_timeouts;
+            }
+            if (const s32 index = taken; index >= 0) {
                 const auto started = Clock::now();
                 bool blank = false;
                 const bool copied = CopyFrame(static_cast<u32>(index), blank);
@@ -2466,6 +2489,10 @@ struct OpenXrHost::Impl {
                  "({:.2f} ms at worst)",
                  graphics.queue_index, end_lock_time / frames * 1e3,
                  end_call_time / frames * 1e3, end_call_worst * 1e3);
+        LOG_INFO(Core_Vr, "Late-frame recovery: {} pictures recovered, {} waits timed out",
+                 late_frames, late_wait_timeouts);
+        late_frames = 0;
+        late_wait_timeouts = 0;
         if ((has_hand_tracking || (use_grips && actions_ready)) && !controllers_used) {
             const float held = pad_samples != 0 ? 1.0f / static_cast<float>(pad_samples) : 0.0f;
             LOG_INFO(Core_Vr,
@@ -2841,6 +2868,7 @@ void OpenXrHost::EndFrame(u32 index, const PresentedFrame& info, vk::Semaphore r
         }
     }
     impl->last_delivery = now;
+    impl->delivered_cv.Notify();
 }
 
 void OpenXrHost::DropFrame(u32 index) {

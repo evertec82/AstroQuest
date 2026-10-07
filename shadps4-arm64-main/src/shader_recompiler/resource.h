@@ -125,13 +125,20 @@ struct ImageResource {
     }
 
     u32 NumBindings(const auto& info) const {
+        // Only an image whose mips are indexed in the shader needs its sharp for this: a
+        // pipeline made from the cache as the emulator starts has no sharps to read (the
+        // title's memory holds nothing yet).
+        if (mip_fallback_mode != MipStorageFallbackMode::DynamicIndex) {
+            return 1;
+        }
         const AmdGpu::Image tsharp = GetSharp(info);
-        return (mip_fallback_mode == MipStorageFallbackMode::DynamicIndex)
-                   ? (tsharp.last_level - tsharp.base_level + 1)
-                   : 1;
+        return tsharp.last_level - tsharp.base_level + 1;
     }
 };
-using ImageResourceList = boost::container::small_vector<ImageResource, NUM_IMAGES>;
+// (Fixed capacity, like the other lists: the pipeline cache stores Shader::InfoPersistent as its
+// bytes, and a small_vector's bytes hold a pointer to its elements, which pointed into the
+// process that wrote the cache.)
+using ImageResourceList = boost::container::static_vector<ImageResource, NUM_IMAGES>;
 
 struct SamplerResource {
     u32 sharp_idx;
@@ -145,7 +152,7 @@ struct SamplerResource {
                                  : info.template ReadUdSharp<AmdGpu::Sampler>(sharp_idx);
     }
 };
-using SamplerResourceList = boost::container::small_vector<SamplerResource, NUM_SAMPLERS>;
+using SamplerResourceList = boost::container::static_vector<SamplerResource, NUM_SAMPLERS>;
 
 struct FMaskResource {
     u32 sharp_idx;

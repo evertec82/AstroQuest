@@ -136,6 +136,8 @@ private:
     std::array<const Shader::Info*, MaxShaderStages> infos{};
     std::array<vk::ShaderModule, MaxShaderStages> modules{};
     std::optional<Shader::Gcn::FetchShaderData> fetch_shader{};
+    // Preloading must retain vertex fetch data across later shader stages.
+    std::optional<Shader::Gcn::FetchShaderData> preload_fetch_shader{};
     GraphicsPipelineKey graphics_key{};
     u8 targets_left_out{};
     ComputePipelineKey compute_key{};

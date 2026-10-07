@@ -78,6 +78,12 @@ or SteamVR motion smoothing.
 - Upstream now provides the SteamVR address-space reservation and runtime-specific idle
   recovery behavior; those implementations are retained instead of duplicate fork patches.
 
+### Selected elliotttate performance port (candidate)
+
+This candidate adds pipeline-cache preload repairs and bounded late-frame recovery. See
+[the port notes](docs/elliotttate-performance-port.md) for scope, attribution and limitations.
+Set `env=SHADPS4_XR_LATE_WAIT_MS=0` in settings.txt to disable late-frame waiting.
+
 ### Precise VR presentation pacing (experimental)
 
 VR early-flip presentation now uses a reusable Windows high-resolution waitable timer
@@ -838,3 +844,4 @@ bash tools/make-pc-vr.sh                                                   # cop
 
 The OpenXR loader (Khronos OpenXR-SDK 1.1.63, `externals/openxr-sdk`) is built with the
 emulator; `ENABLE_OPENXR` (on for Windows) switches the whole of it.
+

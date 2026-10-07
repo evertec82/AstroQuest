@@ -13,6 +13,7 @@ public:
         timer = CreateWaitableTimerExW(nullptr, nullptr,
                                        high_resolution ? CREATE_WAITABLE_TIMER_HIGH_RESOLUTION : 0,
                                        TIMER_MODIFY_STATE | SYNCHRONIZE);
+        precise = timer && high_resolution;
         if (!timer && high_resolution) {
             timer = CreateWaitableTimerExW(nullptr, nullptr, 0, TIMER_MODIFY_STATE | SYNCHRONIZE);
         }
@@ -26,16 +27,27 @@ public:
     DWORD Wait(std::chrono::nanoseconds duration, bool interruptible) {
         if (duration.count() <= 0)
             return WAIT_OBJECT_0;
-        if (!timer)
-            return WAIT_FAILED;
-        LARGE_INTEGER interval;
-        interval.QuadPart = -std::max<long long>(1, duration.count() / 100);
-        if (!SetWaitableTimer(timer, &interval, 0, nullptr, nullptr, FALSE))
+        if (!Arm(duration))
             return WAIT_FAILED;
         return WaitForSingleObjectEx(timer, INFINITE, interruptible);
     }
 
+    bool Arm(std::chrono::nanoseconds duration) {
+        if (!timer)
+            return false;
+        LARGE_INTEGER interval;
+        interval.QuadPart = -std::max<long long>(1, duration.count() / 100);
+        return SetWaitableTimer(timer, &interval, 0, nullptr, nullptr, FALSE) != FALSE;
+    }
+    HANDLE Handle() const {
+        return timer;
+    }
+    bool IsHighResolution() const {
+        return precise;
+    }
+
 private:
     HANDLE timer{};
+    bool precise{};
 };
 } // namespace Common

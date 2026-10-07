@@ -14,10 +14,11 @@
 
 namespace Serialization {
 /* You should increment versions below once corresponding serialization scheme is changed. */
-// Recompile cached shaders with the corrected geometry input ABI and invocation ID.
+// Preserve upstream 0.20 geometry-input ABI and invocation-ID correction.
 static constexpr u32 ShaderBinaryVersion = 3u;
-static constexpr u32 ShaderMetaVersion = 2u;
-static constexpr u32 PipelineKeyVersion = 2u;
+// Inline image/sampler lists replace pointer-containing small vectors.
+static constexpr u32 ShaderMetaVersion = 3u;
+static constexpr u32 PipelineKeyVersion = 3u;
 } // namespace Serialization
 
 namespace Vulkan {
@@ -143,6 +144,16 @@ bool ComputePipeline::SerializationSupport::Deserialize(Serialization::Archive& 
     return true;
 }
 
+// A pipeline whose descriptor layout depends on the title's image sharps (an image whose mips
+// the shader indexes: a binding for each) cannot be made before the title runs: it is not
+// preloaded but compiled when the title first uses it. (Reading the sharps as the emulator
+// starts read the title's memory before there was any.)
+static bool UsesSharpsToLayOut(const Shader::Info& info) {
+    return std::ranges::any_of(info.images, [](const Shader::ImageResource& image) {
+        return image.mip_fallback_mode == Shader::MipStorageFallbackMode::DynamicIndex;
+    });
+}
+
 bool PipelineCache::LoadComputePipeline(Serialization::Archive& ar) {
     compute_key.Deserialize(ar);
 
@@ -159,6 +170,11 @@ bool PipelineCache::LoadComputePipeline(Serialization::Archive& ar) {
     Serialization::Archive meta_ar{std::move(meta_blob)};
 
     if (!LoadPipelineStage(meta_ar, 0)) {
+        return false;
+    }
+    if (UsesSharpsToLayOut(*infos[0])) {
+        infos.fill(nullptr);
+        modules.fill(nullptr);
         return false;
     }
 
@@ -212,6 +228,7 @@ bool GraphicsPipeline::SerializationSupport::Deserialize(Serialization::Archive&
 }
 
 bool PipelineCache::LoadGraphicsPipeline(Serialization::Archive& ar) {
+    preload_fetch_shader.reset();
     graphics_key.Deserialize(ar);
 
     GraphicsPipeline::SerializationSupport sdata{};
@@ -233,8 +250,32 @@ bool PipelineCache::LoadGraphicsPipeline(Serialization::Archive& ar) {
         Serialization::Archive meta_ar{std::move(meta_blob)};
 
         if (!LoadPipelineStage(meta_ar, stage_idx)) {
+            infos.fill(nullptr);
+            modules.fill(nullptr);
+            preload_fetch_shader.reset();
             return false;
         }
+    }
+    if (const auto* vs_info = infos[u32(Shader::LogicalStage::Vertex)];
+        vs_info && vs_info->has_fetch_shader && !preload_fetch_shader) {
+        // A pipeline that would draw without its vertex input is not preloaded: it is compiled
+        // when the title first draws with it, from the fetch shader it uses then.
+        LOG_WARNING(Render_Vulkan,
+                    "Not preloading a pipeline: vertex shader {:#x} has a fetch shader, but the "
+                    "cache has no fetch data for it",
+                    vs_info->pgm_hash);
+        infos.fill(nullptr);
+        modules.fill(nullptr);
+        return false;
+    }
+
+    if (std::ranges::any_of(infos, [](const Shader::Info* info) {
+            return info != nullptr && UsesSharpsToLayOut(*info);
+        })) {
+        infos.fill(nullptr);
+        modules.fill(nullptr);
+        preload_fetch_shader.reset();
+        return false;
     }
 
     const auto [it, is_new] = graphics_pipelines.try_emplace(graphics_key);
@@ -242,11 +283,11 @@ bool PipelineCache::LoadGraphicsPipeline(Serialization::Archive& ar) {
 
     it.value() = std::make_unique<GraphicsPipeline>(
         instance, scheduler, desc_heap, profile, graphics_key, *pipeline_cache, infos,
-        runtime_infos, fetch_shader, modules, sdata, true);
+        runtime_infos, preload_fetch_shader, modules, sdata, true);
 
     infos.fill(nullptr);
     modules.fill(nullptr);
-    fetch_shader.reset();
+    preload_fetch_shader.reset();
 
     return true;
 }
@@ -256,8 +297,14 @@ bool PipelineCache::LoadPipelineStage(Serialization::Archive& ar, size_t stage) 
     Shader::StageSpecialization spec{};
     spec.info = &program->info;
     size_t perm_idx{};
-    if (!LoadShaderMeta(ar, program->info, fetch_shader, spec, perm_idx)) {
+    std::optional<Shader::Gcn::FetchShaderData> stage_fetch{};
+    if (!LoadShaderMeta(ar, program->info, stage_fetch, spec, perm_idx)) {
         return false;
+    }
+    // Only the stage that has a fetch shader (the vertex stage) sets the pipeline's fetch data,
+    // as at runtime. A later stage, a geometry shader above all, has none and must not clear it.
+    if (stage_fetch) {
+        preload_fetch_shader = std::move(stage_fetch);
     }
 
     std::vector<u32> spv{};
@@ -278,6 +325,9 @@ bool PipelineCache::LoadPipelineStage(Serialization::Archive& ar, size_t stage) 
         module = CompileSPV(spv, instance.GetDevice());
         it_pgm.value() = std::move(program);
     } else {
+        // The permutation joins the program already cached: its specialization must point at
+        // that program's info, not at the one this load made, which is gone when it returns.
+        spec.info = &it_pgm.value()->info;
         const auto& it = std::ranges::find(it_pgm.value()->modules, spec, &Program::Module::spec);
         if (it != it_pgm.value()->modules.end()) {
             // If the permutation is already preloaded, make sure it has the same permutation index
