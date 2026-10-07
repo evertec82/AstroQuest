@@ -20,6 +20,7 @@
 #elif defined(_WIN32)
 #include <windows.h>
 #include "common/string_util.h"
+#include "common/windows_sleep_timer.h"
 #else
 #if defined(__Bitrig__) || defined(__DragonFly__) || defined(__FreeBSD__) || defined(__OpenBSD__)
 #include <pthread_np.h>
@@ -109,16 +110,20 @@ void SetCurrentThreadPriority(ThreadPriority new_priority) {
 }
 
 bool AccurateSleep(const std::chrono::nanoseconds duration, std::chrono::nanoseconds* remaining,
-                   const bool interruptible) {
+                   const bool interruptible, const bool high_resolution) {
     const auto begin_sleep = std::chrono::high_resolution_clock::now();
 
-    LARGE_INTEGER interval{
-        .QuadPart = -1 * (duration.count() / 100u),
-    };
-    HANDLE timer = ::CreateWaitableTimer(NULL, TRUE, NULL);
-    SetWaitableTimer(timer, &interval, 0, NULL, NULL, 0);
-    const auto ret = WaitForSingleObjectEx(timer, INFINITE, interruptible);
-    ::CloseHandle(timer);
+    DWORD ret;
+    if (high_resolution) {
+        thread_local WindowsSleepTimer timer;
+        ret = timer.Wait(duration, interruptible);
+    } else {
+        LARGE_INTEGER interval{.QuadPart = -1 * (duration.count() / 100u)};
+        HANDLE timer = ::CreateWaitableTimer(NULL, TRUE, NULL);
+        SetWaitableTimer(timer, &interval, 0, NULL, NULL, 0);
+        ret = WaitForSingleObjectEx(timer, INFINITE, interruptible);
+        ::CloseHandle(timer);
+    }
 
     if (remaining) {
         const auto end_sleep = std::chrono::high_resolution_clock::now();
@@ -149,7 +154,7 @@ void SetCurrentThreadPriority(ThreadPriority new_priority) {
 }
 
 bool AccurateSleep(const std::chrono::nanoseconds duration, std::chrono::nanoseconds* remaining,
-                   const bool interruptible) {
+                   const bool interruptible, [[maybe_unused]] const bool high_resolution) {
     timespec request = {
         .tv_sec = duration.count() / 1'000'000'000,
         .tv_nsec = duration.count() % 1'000'000'000,
@@ -231,13 +236,13 @@ void SetThreadName(void* thread, const char* name) {
 
 #endif
 
-AccurateTimer::AccurateTimer(std::chrono::nanoseconds target_interval)
-    : target_interval(target_interval) {}
+AccurateTimer::AccurateTimer(std::chrono::nanoseconds target_interval, bool high_resolution)
+    : target_interval(target_interval), high_resolution(high_resolution) {}
 
 void AccurateTimer::Start() {
     const auto begin_sleep = std::chrono::high_resolution_clock::now();
     if (total_wait.count() > 0) {
-        AccurateSleep(total_wait, nullptr, false);
+        AccurateSleep(total_wait, nullptr, false, high_resolution);
     }
     start_time = std::chrono::high_resolution_clock::now();
     total_wait -= std::chrono::duration_cast<std::chrono::nanoseconds>(start_time - begin_sleep);

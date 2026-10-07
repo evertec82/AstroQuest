@@ -730,13 +730,19 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
     // after three. For that the thread looks at the queue several times per refresh, without
     // ever waiting for the GPU: the refresh signals themselves stay on time.
     // SHADPS4_EARLY_FLIP=0 goes back to flipping at refreshes only.
-    static constexpr u32 LooksPerRefresh = 8;
+    const char* precise_setting = std::getenv("SHADPS4_VR_PRECISE_PACING");
+    const bool precise_pacing = vr.IsHeadsetConnected() &&
+        !(precise_setting != nullptr && precise_setting[0] == '0');
+    const u32 LooksPerRefresh = precise_pacing ? 32 : 8;
     const char* early_setting = std::getenv("SHADPS4_EARLY_FLIP");
     const bool early_flips =
         vr.IsHeadsetConnected() && !(early_setting != nullptr && early_setting[0] == '0');
     HeadsetRefreshClock refresh_clock{vblank_period, LooksPerRefresh};
 
-    Common::AccurateTimer timer{early_flips ? vblank_period / LooksPerRefresh : vblank_period};
+    Common::AccurateTimer timer{early_flips ? vblank_period / LooksPerRefresh : vblank_period,
+                                precise_pacing && early_flips};
+    LOG_INFO(Lib_VideoOut, "VR precise presentation pacing {}; {} completion polls per refresh",
+             precise_pacing && early_flips ? "enabled" : "disabled", LooksPerRefresh);
 
     const auto receive_request = [this] -> Request {
         std::scoped_lock lk{mutex};
@@ -775,6 +781,14 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
     u32 pace = 2;
 
     while (!token.stop_requested()) {
+        if (precise_pacing && early_flips) {
+            // The runtime may change from the startup/default rate (or change it live).
+            const float rate = vr.HeadsetRefreshRate();
+            if (rate >= 30.0f && rate <= 400.0f) {
+                timer.SetInterval(std::chrono::nanoseconds{
+                    static_cast<s64>(1e9 / (rate * LooksPerRefresh))});
+            }
+        }
         timer.Start();
 
         if (DebugState.IsGuestThreadsPaused()) {

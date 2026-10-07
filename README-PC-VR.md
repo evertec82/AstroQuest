@@ -76,9 +76,24 @@ disable Virtual Desktop SSW or SteamVR motion smoothing.
 - Upstream now provides the SteamVR address-space reservation and runtime-specific idle
   recovery behavior; those implementations are retained instead of duplicate fork patches.
 
-### Soccer-enemy timing candidate (game 1.00)
+### Precise VR presentation pacing (experimental)
 
-A candidate fix for the level 2-2 soccer-enemy assertion changes two animation-budget
+VR early-flip presentation now uses a reusable Windows high-resolution waitable timer
+(with a standard-timer fallback) and checks finished frames 32 times per refresh instead
+of eight. The polling interval follows the runtime's current refresh rate, including
+changes after startup. Other emulator timers keep their previous behavior. No global
+Windows timer-resolution change or busy wait is introduced.
+
+This targets wakeup jitter and the delay between GPU completion and flip; it cannot make
+a game frame that exceeds the headset's frame budget arrive on time. The latest full-rate
+90 Hz run often delivered 88-89 frames/s with occasional 19-25 ms gaps. Standalone timer
+checks and startup validation do not establish a gameplay improvement: compare the same
+scene with the full-refresh diagnostic. To restore the previous presentation behavior,
+add `env=SHADPS4_VR_PRECISE_PACING=0` to `pc-vr/settings.txt`.
+
+### Soccer-enemy timing fix (game 1.00)
+
+The fix for the level 2-2 soccer-enemy assertion changes two animation-budget
 conversions to use the console's immutable 1/60-second frame unit. The previous calculation
 multiplied the budget by the current update step, shrinking it above 60 FPS while the
 animation's duration stayed in seconds. Rendering and elapsed-time integration remain
@@ -88,12 +103,11 @@ This patch is verified against the local 1.00 executable's instruction bytes and
 unexpected code. It is not applied to 1.04, whose locations have not been verified. Set
 `SHADPS4_TITLE_SOCCER_TIMING=0` (or `env=SHADPS4_TITLE_SOCCER_TIMING=0` in settings.txt)
 for a comparison without it. A successful patch is reported as `Soccer animation budgets
-use console 60-FPS units` in the log. It still needs a headset replay of the failing enemy
-at the same above-60 FPS settings; do not treat the candidate as a confirmed gameplay fix.
+use console 60-FPS units` in the log. The user confirmed that the fix resolves the previously failing level 2-2 soccer-enemy encounter.
 
 The previous performance build was confirmed working in user testing. That does not verify
 this merged build's headset gameplay or every upstream change. Earlier sessions at 72 FPS
-hit a game assertion in `MupSoccerEnemy.cpp:1650`; its cause is unresolved. Upstream's 0.20
+hit a game assertion in `MupSoccerEnemy.cpp:1650`; the timing fix above resolves the reported encounter in user testing. Upstream's 0.20
 World 2 collision fix should not be assumed to fix that separate assertion. For comparison
 with original game timing, use a 120 Hz headset with a 60 FPS cap. A crash inside the installed
 SteamVR runtime during disconnect/session cleanup also remains unverified as fixed.
