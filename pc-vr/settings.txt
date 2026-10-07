@@ -1,22 +1,18 @@
 # Settings for "Play Astro Bot VR.bat", one key=value a line. Lines starting with # are ignored;
 # what is commented out below shows the value that applies when the line is left out.
 
-# The window at the start (menu=0 to go without it) sets resolution, fps and fov below.
+# The window at the start (menu=0 to go without it) sets resolution and fov below.
 
 # The width of each eye's picture: 1440 is the console's largest (what a PlayStation 4 Pro
-# draws, 1440x1536); 1800, 2160, 2520, 2880, 3240 or 3600 have the game draw that much larger
+# draws, 1440x1536); 1800, 2160, 2520, 2880, 3240, 3600, 3960 or 4320 have the game draw that much larger
 # (2880 = 2880x3072, four times the pixels), with the memory that takes. The game draws a step
 # smaller by itself while the graphics card cannot keep up; dynamic=0 holds it to the size.
 # game: the console's sizes, chosen by the game itself (816 to 1440).
 #resolution=2880
 #dynamic=1
 
-# The most frames a second: 120, 90, 72, 60, 45, 40, 36 or 30. A frame lasts a whole number of
-# the headset's refreshes, so the refresh rate set in Virtual Desktop (Streaming > Frame rate)
-# decides what is possible: at 120 Hz 120, 60, 40 or 30; at 90 Hz 90, 45 or 30; at 72 Hz 72 or
-# 36. 60 is the console's own. Above 60 the PC has to keep up (this one manages about 100), and
-# the few things the game counts in frames (some animated signs) run faster.
-#fps=60
+# Full-refresh pacing is the default. Set headset refresh in SteamVR or Virtual Desktop.
+# Legacy fps= and pace= entries are ignored; there is no FPS selector in the menu.
 
 # How much of the headset's field of view the game draws, in percent, 70 to 100: at 100 the
 # picture fills all that the headset shows; less puts the same pixels over fewer degrees, a

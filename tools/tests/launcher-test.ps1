@@ -161,6 +161,21 @@ foreach ($assignment in $ast.EndBlock.Statements) {
     }
 }
 
+# Full refresh ignores legacy caps but preserves explicit diagnostic modes.
+$script:settings = [ordered]@{ fps = "30"; pace = "2" }
+$env:SHADPS4_VR_PACE = ""
+$env:SHADPS4_VR_FPS_CAP = "30"
+Set-FramePacing
+Check "Full refresh is the default despite old FPS/pace settings" $env:SHADPS4_VR_PACE "1"
+Check "Old/inherited FPS cap is cleared" $env:SHADPS4_VR_FPS_CAP ""
+$env:SHADPS4_VR_PACE = "0"
+Set-FramePacing
+Check "Explicit adaptive diagnostic is preserved" $env:SHADPS4_VR_PACE "0"
+Check "Higher resolution 3960 is offered" ($widths -contains 3960) $true
+Check "Higher resolution 4320 is offered" ($widths -contains 4320) $true
+Check "3960 eye height" (EyeHeight 3960) 4224
+Check "4320 eye height" (EyeHeight 4320) 4608
+
 # The Visual C++ runtime: looked for where a 64-bit program finds it, whatever PowerShell this is.
 $runtimeFolder = Join-Path $base "system"
 $besideFolder = Join-Path $base "beside"
@@ -204,9 +219,11 @@ function Show-Form($form) {
     $view = $form.Controls["desktopView"]
     $crop = $form.Controls["desktopCrop"]
     $language = $form.Controls["language"]
+    $resolution = $form.Controls["resolution"]
     foreach ($control in $form.Controls) {
         Check "Menu bounds contain $($control.Text) $($control.Name)" $form.ClientRectangle.Contains($control.Bounds) $true
     }
+    Check "Menu has no FPS selector" (@($form.Controls | Where-Object { $_.Text -match 'Maximum framerate' }).Count) 0
     Check "Menu offers three desktop modes" $view.Items.Count 3
     Check "Menu offers Windows' language and the game's 28" $language.Items.Count 29
     foreach ($control in $form.Controls) {
@@ -217,6 +234,7 @@ function Show-Form($form) {
     Check "Desktop view and crop controls do not overlap" $view.Bounds.IntersectsWith($crop.Bounds) $false
     if ($script:menuAction -eq "choose") {
         Check "Menu defaults to Windows' language" $language.SelectedIndex 0
+        $resolution.Value = $widths.Count - 1
         $language.SelectedIndex = 1 + [array]::IndexOf($gameLanguages, "fr-FR")
         Check "Menu defaults to stereo" $view.SelectedIndex 0
         Check "Menu defaults to uncropped image" $crop.Checked $false
@@ -228,6 +246,7 @@ function Show-Form($form) {
         $crop.Checked = $true
         return [System.Windows.Forms.DialogResult]::OK
     }
+    Check "Menu restores highest resolution" $widths[$resolution.Value] 4320
     Check "Menu restores French" $language.SelectedIndex (1 + [array]::IndexOf($gameLanguages, "fr-FR"))
     if ($script:menuAction -eq "restore") { $language.SelectedIndex = 0 }
     Check "Menu restores combined eyes" $view.SelectedIndex 2
@@ -242,6 +261,7 @@ Read-Settings
 Check "Menu accepts combined eyes" (Show-Menu) $true
 $script:menuForm.Dispose()
 Check "Menu saves combined eyes" (Setting "desktop_view") "combined"
+Check "Menu saves highest resolution" (Setting "resolution") "4320"
 Check "Menu saves French" (Setting "language") "fr-FR"
 Check "Menu saves crop" (Setting "desktop_crop") "1"
 $script:menuAction = "cancel"

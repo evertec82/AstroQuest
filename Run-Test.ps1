@@ -1,4 +1,4 @@
-param([ValidateSet('Recovery', 'Original', 'FullRefresh')][string]$Mode = 'Recovery')
+param([ValidateSet('Recovery', 'Original', 'FullRefresh')][string]$Mode = 'FullRefresh')
 $ErrorActionPreference = 'Stop'
 $pcRoot = Join-Path $PSScriptRoot 'pc-vr'
 $archive = Join-Path $PSScriptRoot ('test-logs/' + (Get-Date -Format 'yyyyMMdd-HHmmss-fff') + '-' + $Mode)
@@ -12,7 +12,7 @@ Copy-Item -LiteralPath (Join-Path $pcRoot 'settings.txt') -Destination $archive
 @("Mode=$Mode", "Started=$(Get-Date -Format o)", "RetrySeconds=$env:SHADPS4_VR_RETRY_SECONDS",
   "FixedPace=$env:SHADPS4_VR_PACE", "ExecutableSHA256=$((Get-FileHash (Join-Path $pcRoot 'shadps4.exe')).Hash)") |
     Set-Content -LiteralPath (Join-Path $archive 'run-info.txt') -Encoding UTF8
-Write-Host "Choose resolution and maximum framerate in the settings window. Disable Virtual Desktop SSW or SteamVR motion smoothing for native-FPS testing."
+Write-Host "Choose resolution in the settings window. Set headset refresh in SteamVR or Virtual Desktop. Disable Virtual Desktop SSW or SteamVR motion smoothing for native-FPS testing."
 try {
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $pcRoot 'launch.ps1') -ForceMenu
 } finally {

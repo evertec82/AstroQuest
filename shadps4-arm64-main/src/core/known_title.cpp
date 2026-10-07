@@ -150,7 +150,7 @@ struct Settings {
 
     /// Refreshes of the display a frame is given: 0 is chosen by what the title manages, 1
     /// and more is that many throughout.
-    s32 pace{};
+    s32 pace{1};
     /// The fewest the choice may come to where the display refreshes faster than the title
     /// was made to draw: 2 is the title's own way (a frame for every two refreshes), 1 has it
     /// draw a frame for every refresh, faster than it ever did on the console.

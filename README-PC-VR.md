@@ -16,9 +16,8 @@ runtime is the PC's active one.
    select **Set SteamVR as OpenXR Runtime**. The launcher uses the active runtime without
    changing it. An `XR_RUNTIME_JSON` environment variable overrides that selection; remove
    a Virtual Desktop or simulator override before launching with SteamVR.
-2. Set the Index refresh rate to **120 Hz** in SteamVR's Video settings. Keep `fps=60`
-   in `pc-vr\settings.txt` for the console's frame rate. At 90 Hz the default runs at 45
-   frames a second, at 80 Hz at 40, and at 144 Hz at 48.
+2. Choose the headset refresh rate in SteamVR's Video settings. Full-refresh rendering
+   is the default: the game targets that rate, subject to scene workload and PC performance.
 3. Connect the **DualSense to the PC** by USB or Bluetooth. Buttons, touchpad, gyro,
    rumble and light bar use the existing gamepad path. If you add a Steam shortcut, disable
    **Steam Input for that shortcut** so Steam does not replace it with a virtual Xbox pad.
@@ -56,21 +55,23 @@ It retains upstream game-version 1.00/1.04 support, headset/controller handling,
 selection, snap turning, microphone gain and button-to-blow controls, audio-device handling,
 and the World 2 moving-collision and lava-rendering fixes.
 
-Double-click `Play AstroQuest.bat` to choose maximum per-eye resolution, maximum framerate,
-field of view and the upstream launcher options. Choices are saved in `pc-vr/settings.txt`.
-The public package starts at 3600x3840 per eye and a 72 FPS cap. Headset refresh is configured
-separately in your streaming application or OpenXR runtime. For native-frame comparisons,
-disable Virtual Desktop SSW or SteamVR motion smoothing.
+Double-click `Play AstroQuest.bat` to choose maximum per-eye resolution, field of view
+and the upstream launcher options. Choices are saved in `pc-vr/settings.txt`. Full-refresh
+pacing is the default, with no FPS selector or legacy `fps=` cap. Set headset refresh in
+SteamVR or Virtual Desktop. The resolution list now extends to 3960x4224 and 4320x4608 per
+eye; the runtime may downsample the submitted image to its own swapchain limits. The initial
+resolution remains 3600x3840. For native-frame comparisons, disable Virtual Desktop SSW
+or SteamVR motion smoothing.
 
 - OpenXR uses a second queue in the same Vulkan graphics family when available, with a
   producer timeline semaphore and copy-completion fence. `SHADPS4_XR_SHARED_QUEUE=1`
   restores shared-queue operation for comparison.
-- The normal fork launcher retries full-refresh rendering after 15 seconds rather than the
-  original ten-minute hold. Existing GPU headroom checks and repeated-failure backoff remain.
-  `Run Original Recovery.bat` uses the original 600-second gate.
-- `Run Full Refresh Diagnostic.bat` forces one frame per headset refresh, bypassing adaptive
-  half-rate pacing and the GUI FPS cap. It is a throughput diagnostic, not a guarantee of
-  native refresh or smooth motion.
+- Normal launch and `Run Full Refresh Diagnostic.bat` both use full-refresh mode, bypassing
+  adaptive half-rate pacing. This targets one new frame per refresh, but cannot guarantee
+  native refresh or smooth motion where a frame exceeds its budget.
+- `Run Recovery.bat` opts into adaptive pacing with 15-second full-refresh retries and the
+  existing GPU headroom checks and failure backoff. `Run Original Recovery.bat` uses the
+  original 600-second retry gate.
 - Frame diagnostics measure Windows CPU thread time and distinguish headset queue contention
   from time inside the runtime. Launchers archive settings and logs under `test-logs/`.
 - Upstream now provides the SteamVR address-space reservation and runtime-specific idle

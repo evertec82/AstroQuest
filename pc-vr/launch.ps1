@@ -71,9 +71,8 @@ Read-Settings
 
 # The sizes an eye can be drawn at: the console's largest (1440x1536, what a PlayStation 4 Pro
 # draws) and larger, all the same shape.
-$widths = @(1440, 1800, 2160, 2520, 2880, 3240, 3600)
+$widths = @(1440, 1800, 2160, 2520, 2880, 3240, 3600, 3960, 4320)
 function EyeHeight([int]$width) { return [int]([math]::Round(1536.0 * $width / 1440 / 8) * 8) }
-$caps = @(120, 90, 72, 60, 45, 40, 36, 30)
 # The languages the game has, as Windows names them.
 $gameLanguages = @("en-US", "en-GB", "fr-FR", "fr-CA", "es-ES", "es-419", "de-DE", "it-IT", "nl-NL",
                    "pt-PT", "pt-BR", "ru-RU", "pl-PL", "tr-TR", "sv-SE", "nb-NO", "da-DK", "fi-FI",
@@ -106,7 +105,7 @@ function Get-VrInstructions([string]$runtime) {
     if ($runtime -match 'steamvr|steamxr') {
         return @(
             "Start SteamVR and check that the headset is ready (an Index: with its base stations). Virtual Desktop is not needed."
-            "Set the headset to 120 Hz in SteamVR's Video settings for the game's own 60 frames a second (90 Hz gives 45)."
+            "Set the headset refresh rate in SteamVR's Video settings. The game targets that rate; actual delivery depends on the scene and PC."
             "The DualSense: connect it to THIS PC by USB or Bluetooth. It keeps its motion sensors, touchpad and rumble."
             "If launching through a Steam shortcut, disable Steam Input for that shortcut so the emulator can read the DualSense."
             "SteamVR does not track bare hands: the gamepad in the game stays in front of you and turns with its own sensors."
@@ -136,6 +135,14 @@ function Get-VrInstructions([string]$runtime) {
         "The headset's controllers play too, with no gamepad or whenever they were used after it (right A jump, right B punch, left X or A back, left Y or B triangle)."
         $turnHelp
     )
+}
+
+# Full refresh by default; explicit diagnostic modes may select the older governor.
+# Old fps=/pace= settings are ignored. Advanced env= overrides still apply below.
+function Set-FramePacing {
+    if ([string]::IsNullOrWhiteSpace($env:SHADPS4_VR_PACE)) { $env:SHADPS4_VR_PACE = "1" }
+    $env:SHADPS4_VR_FPS_CAP = ""
+    $env:SHADPS4_VR_FASTEST_PACE = "1"
 }
 
 function Get-DesktopView {
@@ -648,7 +655,7 @@ function Show-Menu {
 
     $form = New-Object System.Windows.Forms.Form
     $form.Text = "Astro Bot VR"
-    $form.ClientSize = New-Object System.Drawing.Size(560, 514)
+    $form.ClientSize = New-Object System.Drawing.Size(560, 474)
     $form.StartPosition = "CenterScreen"
     $form.FormBorderStyle = "FixedDialog"
     $form.MaximizeBox = $false
@@ -672,6 +679,7 @@ function Show-Menu {
     $form.Controls.Add($label)
     $y += 22
     $resolution = New-Object System.Windows.Forms.TrackBar
+    $resolution.Name = "resolution"
     $resolution.Minimum = 0
     $resolution.Maximum = $widths.Count - 1
     $resolution.TickFrequency = 1
@@ -697,16 +705,11 @@ function Show-Menu {
     & $update
     $y += 46
 
-    # Frame rate.
-    $label = New-Object System.Windows.Forms.Label
-    $label.Text = "Maximum framerate (FPS)"
-    $label.Font = New-Object System.Drawing.Font("Segoe UI", 9.5, [System.Drawing.FontStyle]::Bold)
-    $label.SetBounds(16, $y, 250, 20)
-    $form.Controls.Add($label)
+    # Language.
     $label = New-Object System.Windows.Forms.Label
     $label.Text = "Language of the game"
     $label.Font = New-Object System.Drawing.Font("Segoe UI", 9.5, [System.Drawing.FontStyle]::Bold)
-    $label.SetBounds(284, $y, 260, 20)
+    $label.SetBounds(16, $y, 520, 20)
     $form.Controls.Add($label)
     $y += 24
     $language = New-Object System.Windows.Forms.ComboBox
@@ -718,26 +721,14 @@ function Show-Menu {
     # another is chosen here.)
     $languageBefore = [array]::IndexOf($gameLanguages, (Setting "language" "windows")) + 1
     $language.SelectedIndex = $languageBefore
-    $language.SetBounds(284, $y, 260, 26)
+    $language.SetBounds(16, $y, 530, 26)
     $form.Controls.Add($language)
-    $fps = New-Object System.Windows.Forms.ComboBox
-    $fps.DropDownStyle = "DropDownList"
-    foreach ($cap in $caps) {
-        $text = "$cap"
-        if ($cap -eq 60) { $text = "60 (the console's own)" }
-        [void]$fps.Items.Add($text)
-    }
-    $fps.SetBounds(16, $y, 200, 26)
-    $index = [array]::IndexOf($caps, [int](Setting "fps" "60"))
-    if ($index -lt 0) { $index = 3 }
-    $fps.SelectedIndex = $index
-    $form.Controls.Add($fps)
     $y += 32
-    $fpsText = New-Object System.Windows.Forms.Label
-    $fpsText.Text = "A frame lasts a whole number of the headset's refreshes: at 120 Hz, 120, 60, 40 or 30 frames a second; at 90 Hz, 90, 45 or 30; at 80 Hz, 80 or 40. Choose 120 Hz for 60 frames a second. Set it in SteamVR Video settings for an Index, or Virtual Desktop Streaming settings for a Quest."
-    $fpsText.SetBounds(16, $y, 530, 84)
-    $form.Controls.Add($fpsText)
-    $y += 88
+    $pacingText = New-Object System.Windows.Forms.Label
+    $pacingText.Text = "Full refresh: the game targets the headset's refresh rate. Change that rate in SteamVR or Virtual Desktop. Actual frame delivery depends on the scene and PC."
+    $pacingText.SetBounds(16, $y, 530, 44)
+    $form.Controls.Add($pacingText)
+    $y += 48
 
     # Field of view.
     $label = New-Object System.Windows.Forms.Label
@@ -820,7 +811,6 @@ function Show-Menu {
     $result = Show-Form $form
     if ($result -ne [System.Windows.Forms.DialogResult]::OK) { return $false }
     Save-Setting "resolution" ($widths[$resolution.Value])
-    Save-Setting "fps" ($caps[$fps.SelectedIndex])
     if ($language.SelectedIndex -ne $languageBefore) {
         Save-Setting "language" ($(if ($language.SelectedIndex -le 0) { "windows" } else { $gameLanguages[$language.SelectedIndex - 1] }))
     }
@@ -911,11 +901,7 @@ if ($fovSetting -ne "100") { $env:SHADPS4_VR_FOV = $fovSetting }
 # fov_of: what fov is a percent of. headset: what the headset being worn shows, all of it at 100
 # (the emulator asks the headset as it starts). psvr: a PlayStation VR's, as the game was made.
 if ((Setting "fov_of" "headset") -ne "psvr") { $env:SHADPS4_VR_FOV_OF = "headset" }
-# fps: the most frames a second. (pace, the older way to say it: refreshes of the headset a
-# frame is given, 1 or more.)
-$env:SHADPS4_VR_FPS_CAP = Setting "fps" "60"
-$pace = Setting "pace" ""
-if ($pace -eq "1") { $env:SHADPS4_VR_FASTEST_PACE = "1"; $env:SHADPS4_VR_FPS_CAP = "" } elseif ($pace -ne "" -and $pace -ne "2") { $env:SHADPS4_VR_PACE = $pace }
+Set-FramePacing
 if ((Setting "headset" "1") -eq "0") { $env:SHADPS4_OPENXR = "0" }
 if ((Setting "pause" "1") -eq "0") { $env:SHADPS4_XR_PAUSE = "0" }
 if ((Setting "controllers" "1") -eq "0") { $env:SHADPS4_XR_CONTROLLERS = "0" }
@@ -931,7 +917,7 @@ foreach ($pair in $extraEnv) {
 # --- what is there ----------------------------------------------------------------------------
 Say "ASTRO BOT Rescue Mission - PC VR" "Cyan"
 if ($env:SHADPS4_TITLE_EYE_WIDTH) {
-    Say ("Each eye up to " + $env:SHADPS4_TITLE_EYE_WIDTH + " x " + (EyeHeight ([int]$env:SHADPS4_TITLE_EYE_WIDTH)) + ", at most " + $env:SHADPS4_VR_FPS_CAP + " frames a second.")
+    Say ("Each eye up to " + $env:SHADPS4_TITLE_EYE_WIDTH + " x " + (EyeHeight ([int]$env:SHADPS4_TITLE_EYE_WIDTH)) + "; frame delivery targets the headset refresh rate.")
 }
 $runtime = ""
 if ($env:XR_RUNTIME_JSON) {
