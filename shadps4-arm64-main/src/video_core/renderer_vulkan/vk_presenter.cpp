@@ -867,12 +867,101 @@ HmdFrames Presenter::PrepareHmdFrame(std::span<const AmdGpu::Image, 2> eye_textu
         const auto dump_flag =
             Common::FS::GetUserPath(Common::FS::PathType::UserDir) / "dump_render_targets";
         static u32 frames_until_check = 0;
+        static u32 diagnostic_capture_delay = 0;
+        if (diagnostic_capture_delay != 0 && --diagnostic_capture_delay == 0) {
+            VideoCore::RequestScreenshot(VideoCore::ScreenshotRequest::WithOverlays);
+        }
         if (frames_until_check-- == 0) {
             frames_until_check = 120;
+            // One-shot, hex pipeline fragment-stage hash. Always restore after 15s.
+            // This isolates a draw's contribution without persistent shader patches.
+            using DiagnosticClock = std::chrono::steady_clock;
+            static auto restore_at = DiagnosticClock::time_point::max();
+            const auto now = DiagnosticClock::now();
+            static auto coverage_restore_at = DiagnosticClock::time_point::max();
+            if (now >= coverage_restore_at) {
+                SetDiagnosticCoverageShader(0);
+                coverage_restore_at = DiagnosticClock::time_point::max();
+                diagnostic_capture_delay = 4;
+            }
+            const auto coverage_flag =
+                Common::FS::GetUserPath(Common::FS::PathType::UserDir) / "diagnostic_coverage_ps";
+            if (std::filesystem::exists(coverage_flag, ec)) {
+                u64 hash = 0;
+                {
+                    std::ifstream request{coverage_flag};
+                    request >> std::hex >> hash;
+                }
+                std::filesystem::remove(coverage_flag, ec);
+                SetDiagnosticCoverageShader(hash);
+                coverage_restore_at = hash != 0 ? now + std::chrono::seconds(15)
+                                               : DiagnosticClock::time_point::max();
+                diagnostic_capture_delay = 4;
+            }
+            if (coverage_restore_at != DiagnosticClock::time_point::max()) {
+                frames_until_check = 1;
+            }
+            static auto feedback_restore_at = DiagnosticClock::time_point::max();
+            if (now >= feedback_restore_at) {
+                Rasterizer::SetDiagnosticFeedbackShader(0);
+                feedback_restore_at = DiagnosticClock::time_point::max();
+            }
+            const auto feedback_flag =
+                Common::FS::GetUserPath(Common::FS::PathType::UserDir) / "diagnostic_feedback_ps";
+            if (std::filesystem::exists(feedback_flag, ec)) {
+                u64 hash = 0;
+                {
+                    std::ifstream request{feedback_flag};
+                    request >> std::hex >> hash;
+                }
+                std::filesystem::remove(feedback_flag, ec);
+                Rasterizer::SetDiagnosticFeedbackShader(hash);
+                feedback_restore_at = hash != 0 ? now + std::chrono::seconds(15)
+                                                : DiagnosticClock::time_point::max();
+                diagnostic_capture_delay = 4;
+            }
+            if (feedback_restore_at != DiagnosticClock::time_point::max()) {
+                // Copies deliberately stall the GPU: don't make restoration wait 120
+                // slow frames while this diagnostic is active.
+                frames_until_check = 1;
+            }
+            if (now >= restore_at) {
+                Rasterizer::SetDiagnosticSkippedShader(0);
+                restore_at = DiagnosticClock::time_point::max();
+                diagnostic_capture_delay = 4;
+            }
+            const auto skip_flag =
+                Common::FS::GetUserPath(Common::FS::PathType::UserDir) / "diagnostic_skip_ps";
+            if (std::filesystem::exists(skip_flag, ec)) {
+                u64 hash = 0;
+                {
+                    std::ifstream request{skip_flag};
+                    request >> std::hex >> hash;
+                }
+                std::filesystem::remove(skip_flag, ec);
+                Rasterizer::SetDiagnosticSkippedShader(hash);
+                restore_at = hash != 0 ? now + std::chrono::seconds(15)
+                                       : DiagnosticClock::time_point::max();
+                diagnostic_capture_delay = 4;
+            }
             if (std::filesystem::exists(dump_flag, ec)) {
+                // Optional contents: decimal width, then hexadecimal guest image address.
+                // An address limits the capture to that target, avoiding full-size dumps of
+                // every cached image. Empty/legacy requests retain thumbnail behavior.
+                u32 requested_width = 0;
+                u64 requested_address = 0;
+                {
+                    std::ifstream request{dump_flag};
+                    request >> requested_width >> std::hex >> requested_address;
+                }
+                if (requested_width != 0) {
+                    requested_width = std::clamp(requested_width, 64u, 8192u);
+                }
                 std::filesystem::remove(dump_flag, ec);
-                DumpGpuImages();
+                DumpGpuImages(requested_width, requested_address);
                 Rasterizer::StartDrawTrace(3000);
+                VideoCore::RequestScreenshot(VideoCore::ScreenshotRequest::GameOnly);
+                VideoCore::RequestScreenshot(VideoCore::ScreenshotRequest::WithOverlays);
             }
         }
     }
@@ -1079,7 +1168,7 @@ bool Presenter::DeliverHmdFrame(Frame* frame, const Core::Vr::PresentedFrame& in
     return true;
 }
 
-void Presenter::DumpGpuImages() {
+void Presenter::DumpGpuImages(u32 requested_width, u64 requested_address) {
     // SHADPS4_DUMP_WIDTH=<pixels>: how wide the pictures are at most (640 unless told; the
     // targets' own width for looking at what is in a pixel).
     static const u32 ThumbWidth = [] {
@@ -1106,14 +1195,17 @@ void Presenter::DumpGpuImages() {
             info.props.is_volume || info.size.width < 64 || info.size.height < 64) {
             return;
         }
-        images.push_back(&image);
+        if (requested_address == 0 || info.guest_address == requested_address) {
+            images.push_back(&image);
+        }
     });
 
     const vk::Device device = instance.GetDevice();
     u32 index = 0;
     for (VideoCore::Image* image : images) {
         const auto& info = image->info;
-        const u32 width = std::min(info.size.width, ThumbWidth);
+        const u32 width = std::min(info.size.width,
+                                  requested_width != 0 ? requested_width : ThumbWidth);
         const u32 height = std::max(1u, info.size.height * width / info.size.width);
 
         const vk::ImageCreateInfo thumb_ci = {

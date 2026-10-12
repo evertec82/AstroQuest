@@ -268,6 +268,19 @@ public:
         return amd_mixed_attachment_samples;
     }
 
+    bool SupportsCoverageTruncate(u32 raster, u32 color, u32 depth) const {
+        for (const auto& combination : coverage_combinations) {
+            if (combination.coverageReductionMode == vk::CoverageReductionModeNV::eTruncate &&
+                static_cast<u32>(combination.rasterizationSamples) == raster &&
+                (static_cast<u32>(combination.colorSamples) & color) != 0 &&
+                (depth == 0 ? !combination.depthStencilSamples :
+                 (static_cast<u32>(combination.depthStencilSamples) & depth) != 0)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /// Returns true when geometry shaders are supported by the device
     bool IsGeometryStageSupported() const {
         return features.geometryShader;
@@ -563,6 +576,8 @@ private:
     bool amd_gcn_shader{};
     bool amd_shader_trinary_minmax{};
     bool nv_framebuffer_mixed_samples{};
+    bool coverage_reduction{};
+    std::vector<vk::FramebufferMixedSamplesCombinationNV> coverage_combinations;
     bool amd_mixed_attachment_samples{};
     bool push_descriptor{};
     bool vertex_attribute_divisor{};

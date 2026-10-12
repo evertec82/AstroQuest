@@ -1005,11 +1005,23 @@ if (Test-Path $log) { Copy-Item $log (Join-Path $logDir "shad_log.prev.txt") -Fo
 # (In this console, with what it prints kept out of the way: a window style given here would
 # also be the game window's.)
 $startedAt = Get-Date
+@("Started=$($startedAt.ToString('o'))", 'Status=Starting') |
+    Set-Content (Join-Path $logDir 'run-result.txt') -Encoding UTF8
+try {
 $process = Start-Process -FilePath $emulator -ArgumentList @("-g", "`"$game`"") -WorkingDirectory $here `
     -PassThru -NoNewWindow -RedirectStandardOutput (Join-Path $logDir "console.txt") `
     -RedirectStandardError (Join-Path $logDir "console-errors.txt")
+} catch {
+    @("Started=$($startedAt.ToString('o'))", 'Status=LaunchFailed',
+      "Error=$($_.Exception.Message)") |
+        Set-Content (Join-Path $logDir 'run-result.txt') -Encoding UTF8
+    try { & (Join-Path $here 'collect-crash-report.ps1') } catch { Write-Warning $_ }
+    throw
+}
 # (Without this the exit code is not to be had later.)
 $null = $process.Handle
+@("Started=$($startedAt.ToString('o'))", "ProcessId=$($process.Id)", 'Status=Running') |
+    Set-Content (Join-Path $logDir 'run-result.txt') -Encoding UTF8
 $position = 0
 $shown = @{}
 function Show-Log {
@@ -1060,9 +1072,20 @@ while (-not $process.HasExited) {
     Start-Sleep -Milliseconds 700
     Show-Log
 }
+$process.WaitForExit()
+$process.Refresh()
+$exitCode = $process.ExitCode
+@("Started=$($startedAt.ToString('o'))", "Ended=$(Get-Date -Format o)",
+  "ProcessId=$($process.Id)", "ExitCode=$exitCode", 'Status=Exited') |
+    Set-Content (Join-Path $logDir 'run-result.txt') -Encoding UTF8
 Show-Log
 Say ""
-if ($null -ne $process.ExitCode -and $process.ExitCode -ne 0) {
+if ($null -eq $exitCode -or $exitCode -ne 0) {
+    try {
+        & (Join-Path $here 'collect-crash-report.ps1')
+    } catch {
+        Say ("Could not create crash ZIP: " + $_.Exception.Message) "Yellow"
+    }
     Say ("The emulator ended with code " + $process.ExitCode + ". Its log is $log") "Yellow"
     if ($process.ExitCode -eq -1073741515) {
         Say "Windows could not find a file the emulator needs: most likely the Microsoft Visual C++ runtime (64-bit) is not installed. Its installer: https://aka.ms/vs/17/release/vc_redist.x64.exe"

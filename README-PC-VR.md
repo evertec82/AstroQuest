@@ -845,3 +845,27 @@ bash tools/make-pc-vr.sh                                                   # cop
 The OpenXR loader (Khronos OpenXR-SDK 1.1.63, `externals/openxr-sdk`) is built with the
 emulator; `ENABLE_OPENXR` (on for Windows) switches the whole of it.
 
+
+## Crash reports
+
+From v0.8.0, an abnormal emulator exit automatically creates a ZIP in `pc-vr/reports`.
+After a crash, you can also run **Collect Crash Report.bat** before starting another run.
+The report includes emulator and console logs, the process exit code (when the launcher
+observed it), settings, and the executable hash. It excludes game files, saves, and shader
+caches. Review it before sharing because logs may contain local paths.
+
+## PC release versions
+
+PC package versions are independent of the upstream mod and shadPS4 versions.
+Older release titles are numbered chronologically; their original links and assets remain valid.
+
+| Version | Release |
+| --- | --- |
+| v0.1.0 | GUI performance test |
+| v0.2.0 | 15-second recovery test |
+| v0.3.0 | Performance and SteamVR |
+| v0.4.0 | Upstream 0.20 performance |
+| v0.5.0 | Soccer enemy timing fix |
+| v0.6.0 | Full framerate and higher resolutions |
+| v0.7.0 | Timer and desktop mirror improvements |
+| v0.8.0 | Transparent-effect seams and crash-report ZIPs |

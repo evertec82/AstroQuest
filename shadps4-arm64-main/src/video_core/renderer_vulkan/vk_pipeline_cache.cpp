@@ -335,7 +335,11 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline() {
     if (!RefreshGraphicsKey()) {
         return nullptr;
     }
-    const auto [it, is_new] = graphics_pipelines.try_emplace(graphics_key);
+    const u64 diagnostic_hash = GetDiagnosticCoverageShader();
+    const bool diagnostic_coverage = diagnostic_hash != 0 &&
+        graphics_key.stage_hashes[u32(Shader::LogicalStage::Fragment)] == diagnostic_hash;
+    auto& selected_pipelines = diagnostic_coverage ? coverage_pipelines : graphics_pipelines;
+    const auto [it, is_new] = selected_pipelines.try_emplace(graphics_key);
     if (is_new) {
         const auto pipeline_hash = std::hash<GraphicsPipelineKey>{}(graphics_key);
         LOG_INFO(Render_Vulkan, "Compiling graphics pipeline {:#x}", pipeline_hash);
@@ -355,7 +359,7 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline() {
             }
             it.value() = std::make_unique<GraphicsPipeline>(
                 instance, scheduler, desc_heap, profile, graphics_key, *pipeline_cache, infos,
-                runtime_infos, fetch_shader, modules, sdata, false);
+                runtime_infos, fetch_shader, modules, sdata, false, diagnostic_coverage);
         } catch (const std::exception& ex) {
             LOG_ERROR(Render_Vulkan, "Graphics pipeline {:#x} compile failed: {}", pipeline_hash,
                       ex.what());
@@ -364,10 +368,12 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline() {
             return nullptr;
         }
 
-        RegisterPipelineData(graphics_key, pipeline_hash, sdata);
+        if (!diagnostic_coverage) {
+            RegisterPipelineData(graphics_key, pipeline_hash, sdata);
+        }
         ++num_new_pipelines;
 
-        if (EmulatorSettings.IsShaderCollect()) {
+        if (!diagnostic_coverage && EmulatorSettings.IsShaderCollect()) {
             for (auto stage = 0; stage < MaxShaderStages; ++stage) {
                 if (infos[stage]) {
                     auto& m = modules[stage];

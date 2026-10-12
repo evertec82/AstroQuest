@@ -241,6 +241,7 @@ bool Instance::CreateDevice() {
                           vk::PhysicalDeviceExtendedDynamicState3FeaturesEXT,
                           vk::PhysicalDevicePrimitiveTopologyListRestartFeaturesEXT,
                           vk::PhysicalDeviceShaderAtomicFloat2FeaturesEXT,
+                          vk::PhysicalDeviceCoverageReductionModeFeaturesNV,
                           vk::PhysicalDeviceWorkgroupMemoryExplicitLayoutFeaturesKHR,
                           vk::PhysicalDeviceImage2DViewOf3DFeaturesEXT>();
     features = feature_chain.get().features;
@@ -369,6 +370,21 @@ bool Instance::CreateDevice() {
             add_extension(VK_AMD_MIXED_ATTACHMENT_SAMPLES_EXTENSION_NAME);
     }
     shader_atomic_float = add_extension(VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME);
+    if (nv_framebuffer_mixed_samples &&
+        feature_chain.get<vk::PhysicalDeviceCoverageReductionModeFeaturesNV>().coverageReductionMode) {
+        coverage_reduction = add_extension(VK_NV_COVERAGE_REDUCTION_MODE_EXTENSION_NAME);
+        if (coverage_reduction) {
+            auto combinations = physical_device.getSupportedFramebufferMixedSamplesCombinationsNV();
+            if (combinations.result == vk::Result::eSuccess) {
+                coverage_combinations = std::move(combinations.value);
+            } else {
+                coverage_reduction = false;
+                LOG_WARNING(Render_Vulkan, "Coverage combination query failed; using existing fallback");
+            }
+            LOG_INFO(Render_Vulkan, "Coverage reduction enabled: {} supported combinations",
+                     coverage_combinations.size());
+        }
+    }
     shader_atomic_float2 = add_extension(VK_EXT_SHADER_ATOMIC_FLOAT_2_EXTENSION_NAME);
     if (shader_atomic_float2) {
         shader_atomic_float2_features =
@@ -524,6 +540,9 @@ bool Instance::CreateDevice() {
             .maintenance4 = vk13_features.maintenance4,
         },
         // Extensions
+        vk::PhysicalDeviceCoverageReductionModeFeaturesNV{
+            .coverageReductionMode = coverage_reduction,
+        },
         vk::PhysicalDeviceCustomBorderColorFeaturesEXT{
             .customBorderColors = true,
             .customBorderColorWithoutFormat = true,
@@ -595,6 +614,9 @@ bool Instance::CreateDevice() {
 
     if (!custom_border_color) {
         device_chain.unlink<vk::PhysicalDeviceCustomBorderColorFeaturesEXT>();
+    }
+    if (!coverage_reduction) {
+        device_chain.unlink<vk::PhysicalDeviceCoverageReductionModeFeaturesNV>();
     }
     if (!dynamic_state_3) {
         device_chain.unlink<vk::PhysicalDeviceExtendedDynamicState3FeaturesEXT>();

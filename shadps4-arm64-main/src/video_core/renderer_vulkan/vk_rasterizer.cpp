@@ -54,6 +54,35 @@ Rasterizer::Rasterizer(const Instance& instance_, Scheduler& scheduler_,
 Rasterizer::~Rasterizer() = default;
 
 static std::atomic<s32> g_draw_trace_budget{0};
+static std::atomic<u64> g_diagnostic_skip_shader{0};
+static std::atomic<u64> g_diagnostic_skipped_draws{0};
+static std::atomic<u64> g_diagnostic_feedback_shader{0};
+static std::atomic<u64> g_diagnostic_feedback_copies{0};
+
+void Rasterizer::SetDiagnosticFeedbackShader(u64 hash) {
+    g_diagnostic_feedback_shader.store(hash, std::memory_order_relaxed);
+    LOG_INFO(Render_Vulkan, "Diagnostic feedback shader {:#x}; previous copies={}", hash,
+             g_diagnostic_feedback_copies.exchange(0));
+}
+
+void Rasterizer::SetDiagnosticSkippedShader(u64 hash) {
+    g_diagnostic_skip_shader.store(hash, std::memory_order_relaxed);
+    const auto previous = g_diagnostic_skipped_draws.exchange(0);
+    LOG_INFO(Render_Vulkan, "Diagnostic shader selection {:#x}; previous skipped draws={}",
+             hash, previous);
+}
+
+static bool IsDiagnosticShaderSkipped(const GraphicsPipeline* pipeline) {
+    const auto hash = g_diagnostic_skip_shader.load(std::memory_order_relaxed);
+    if (hash == 0 || pipeline == nullptr ||
+        pipeline->GetGraphicsKey().stage_hashes[u32(Shader::LogicalStage::Fragment)] != hash) {
+        return false;
+    }
+    if (g_diagnostic_skipped_draws.fetch_add(1, std::memory_order_relaxed) == 0) {
+        LOG_INFO(Render_Vulkan, "Diagnostic shader matched {:#x}", hash);
+    }
+    return true;
+}
 
 void Rasterizer::StartDrawTrace(s32 count) {
     g_draw_trace_budget.store(count);
@@ -270,6 +299,9 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
     }
     const auto& regs = liverpool->regs;
     const GraphicsPipeline* pipeline = pipeline_cache.GetGraphicsPipeline();
+    if (IsDiagnosticShaderSkipped(pipeline)) {
+        return;
+    }
     if (pipeline != nullptr && !in_target_passes) {
         if (const auto passes = SharedTargetPasses(pipeline->GetGraphicsKey().mrt_mask);
             passes.size() > 1) {
@@ -341,6 +373,21 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
                  texture_cache.IsMetaCleared(regs.depth_htile_data_base.GetAddress(),
                                              regs.depth_view.slice_start),
                  static_cast<u32>(regs.depth_buffer.z_info.format));
+        for (u32 target = 0; pipeline && target < key.num_color_attachments; ++target) {
+            const auto& blend = key.blend_controls[target];
+            LOG_INFO(Render_Vulkan,
+                     "TRACE blend target={} enabled={} color={}/{}/{} alpha={}/{}/{} "
+                     "separate={} polygon={} shader_mask={:#x}",
+                     target, static_cast<bool>(blend.enable),
+                     static_cast<u32>(blend.color_src_factor),
+                     static_cast<u32>(blend.color_dst_factor),
+                     static_cast<u32>(blend.color_func),
+                     static_cast<u32>(blend.alpha_src_factor),
+                     static_cast<u32>(blend.alpha_dst_factor),
+                     static_cast<u32>(blend.alpha_func),
+                     static_cast<bool>(blend.separate_alpha_blend),
+                     static_cast<u32>(key.polygon_mode), key.cb_shader_mask.GetMask(target));
+        }
     }
     if (!pipeline) {
         return;
@@ -490,6 +537,9 @@ void Rasterizer::DrawIndirect(bool is_indexed, VAddr arg_address, u32 offset, u3
     }
 
     const GraphicsPipeline* pipeline = pipeline_cache.GetGraphicsPipeline();
+    if (IsDiagnosticShaderSkipped(pipeline)) {
+        return;
+    }
     if (!pipeline) {
         return;
     }
@@ -1028,11 +1078,13 @@ std::unique_ptr<VideoCore::Buffer> Rasterizer::IsolateReadConstGuestBuffer(VAddr
 }
 
 void Rasterizer::RetireIsolatedReadConstSnapshots() {
-    if (isolated_readconst_buffers.empty()) {
+    if (isolated_readconst_buffers.empty() && diagnostic_feedback_images.empty()) {
         return;
     }
     scheduler.Finish();
     isolated_readconst_buffers.clear();
+    diagnostic_feedback_views.clear();
+    diagnostic_feedback_images.clear();
 }
 
 void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindings& binding) {
@@ -1160,6 +1212,33 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
 
             auto& image = texture_cache.GetImage(image_id);
             auto& image_view = texture_cache.FindTexture(image_id, desc);
+
+            // Explicit, time-limited diagnostic: read a stable copy instead of the active
+            // attachment. Finish after the draw before destroying the temporary resources.
+            const auto feedback_shader =
+                g_diagnostic_feedback_shader.load(std::memory_order_relaxed);
+            if (feedback_shader != 0 && stage.pgm_hash == feedback_shader && !is_storage &&
+                image.binding.is_target && !image.info.props.is_depth &&
+                !image.info.props.is_volume && image.info.num_samples == 1 &&
+                image.backing->image.image_ci.samples == vk::SampleCountFlagBits::e1 &&
+                image.info.resources.levels == 1 && image.info.resources.layers == 1) {
+                auto snapshot = std::make_unique<VideoCore::Image>(
+                    instance, scheduler, *image.blit_helper, *image.slot_image_views, image.info);
+                snapshot->CopyImage(image);
+                snapshot->Transit(vk::ImageLayout::eShaderReadOnlyOptimal,
+                                  vk::AccessFlagBits2::eShaderRead, {});
+                auto view = std::make_unique<VideoCore::ImageView>(instance, desc.view_info,
+                                                                 *snapshot);
+                image_infos.emplace_back(VK_NULL_HANDLE, *view->image_view,
+                                         vk::ImageLayout::eShaderReadOnlyOptimal);
+                diagnostic_feedback_views.push_back(std::move(view));
+                diagnostic_feedback_images.push_back(std::move(snapshot));
+                if (g_diagnostic_feedback_copies.fetch_add(1) == 0) {
+                    LOG_INFO(Render_Vulkan, "Diagnostic feedback copied shader={:#x} image={:#x}",
+                             stage.pgm_hash, image.info.guest_address);
+                }
+                continue;
+            }
 
             // The image is either bound as storage in a separate descriptor or bound as render
             // target in feedback loop. Depth images are excluded because they can't be bound as

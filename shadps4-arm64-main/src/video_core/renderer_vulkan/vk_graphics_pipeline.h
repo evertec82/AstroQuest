@@ -19,6 +19,10 @@ class TextureCache;
 
 namespace Vulkan {
 
+// Temporary coverage comparison; zero keeps the normal pipeline path.
+void SetDiagnosticCoverageShader(u64 hash);
+u64 GetDiagnosticCoverageShader();
+
 static constexpr u32 MaxShaderStages = static_cast<u32>(Shader::LogicalStage::NumLogicalStages);
 static constexpr u32 MaxVertexBufferCount = 32;
 
@@ -89,7 +93,7 @@ public:
                      std::span<const Shader::RuntimeInfo, MaxShaderStages> runtime_infos,
                      std::optional<const Shader::Gcn::FetchShaderData> fetch_shader,
                      std::span<const vk::ShaderModule> modules, SerializationSupport& sdata,
-                     bool preloading);
+                     bool preloading, bool diagnostic_single_sample = false);
     ~GraphicsPipeline();
 
     const std::optional<const Shader::Gcn::FetchShaderData>& GetFetchShader() const noexcept {

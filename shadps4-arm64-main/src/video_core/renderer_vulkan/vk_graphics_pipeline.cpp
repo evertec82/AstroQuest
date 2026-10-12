@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <atomic>
 #include <utility>
 #include <boost/container/small_vector.hpp>
 
@@ -14,6 +15,17 @@
 #include "video_core/renderer_vulkan/vk_shader_util.h"
 
 namespace Vulkan {
+
+static std::atomic<u64> diagnostic_coverage_shader{0};
+
+void SetDiagnosticCoverageShader(u64 hash) {
+    diagnostic_coverage_shader.store(hash, std::memory_order_relaxed);
+    LOG_INFO(Render_Vulkan, "Diagnostic coverage shader {:#x}", hash);
+}
+
+u64 GetDiagnosticCoverageShader() {
+    return diagnostic_coverage_shader.load(std::memory_order_relaxed);
+}
 
 using Shader::Backend::SPIRV::AuxShaderType;
 
@@ -32,7 +44,8 @@ GraphicsPipeline::GraphicsPipeline(
     vk::PipelineCache pipeline_cache, std::span<const Shader::Info*, MaxShaderStages> infos,
     std::span<const Shader::RuntimeInfo, MaxShaderStages> runtime_infos,
     std::optional<const Shader::Gcn::FetchShaderData> fetch_shader_,
-    std::span<const vk::ShaderModule> modules, SerializationSupport& sdata, bool preloading)
+    std::span<const vk::ShaderModule> modules, SerializationSupport& sdata, bool preloading,
+    bool diagnostic_single_sample)
     : Pipeline{instance, scheduler, desc_heap, profile, pipeline_cache}, key{key_},
       fetch_shader{std::move(fetch_shader_)} {
     const vk::Device device = instance.GetDevice();
@@ -125,6 +138,54 @@ GraphicsPipeline::GraphicsPipeline(
             .sampleShadingEnable =
                 fs_info.addr_flags.persp_sample_ena || fs_info.addr_flags.linear_sample_ena,
         };
+    }
+
+    // A single-sample additive target must not accumulate a full contribution from
+    // both triangles along a shared edge merely because their depth/stencil target
+    // has more samples. Selecting one coverage sample avoids those bright seams.
+    // Keep this workaround restricted to the RGB-only additive configuration
+    // verified in Astro Bot; ordinary multisampled color passes are unaffected.
+    using BlendFactor = AmdGpu::BlendControl::BlendFactor;
+    using BlendFunc = AmdGpu::BlendControl::BlendFunc;
+    const auto rgb_mask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
+                          vk::ColorComponentFlagBits::eB;
+    const auto& blend = key.blend_controls[0];
+    const bool additive_single_sample =
+        key.num_color_attachments == 1 && key.color_samples[0] == 1 &&
+        key.num_samples > 1 && key.write_masks[0] == rgb_mask && blend.enable &&
+        blend.color_src_factor == BlendFactor::SrcAlpha &&
+        blend.color_dst_factor == BlendFactor::One && blend.color_func == BlendFunc::Add;
+
+    // Apply on cache reload too, without serializing a stack pointer.
+    const vk::SampleMask single_sample_mask = 1;
+    auto multisampling = sdata.multisampling;
+    const u32 raster_samples = static_cast<u32>(multisampling.rasterizationSamples);
+    const u32 depth_samples = (static_cast<u32>(key.z_format) != 0 ||
+                              static_cast<u32>(key.stencil_format) != 0)
+                                 ? key.depth_samples : 0;
+    const bool mixed_transparency = key.num_color_attachments == 1 && blend.enable &&
+                                   key.color_samples[0] != 0 &&
+                                   raster_samples > key.color_samples[0];
+    // Unlike a mask of one, TRUNCATE retains one independent coverage sample for
+    // EVERY color sample. That prevents shared-edge double blending without
+    // reducing a four-sample target to a quarter of its normal contribution.
+    const vk::PipelineCoverageReductionStateCreateInfoNV coverage_state{
+        .coverageReductionMode = vk::CoverageReductionModeNV::eTruncate,
+    };
+    const bool truncate_coverage = mixed_transparency &&
+        instance.SupportsCoverageTruncate(raster_samples, key.color_samples[0], depth_samples);
+    const bool verified_border = mixed_transparency &&
+        key.stage_hashes[u32(Shader::LogicalStage::Fragment)] == 0xdd8ac3c2dfeULL;
+    if (diagnostic_single_sample || additive_single_sample ||
+        (verified_border && !truncate_coverage)) {
+        multisampling.pSampleMask = &single_sample_mask;
+        LOG_INFO(Render_Vulkan, "Single-sample additive coverage ps={:#x} samples={} mask=1",
+                 key.stage_hashes[u32(Shader::LogicalStage::Fragment)], key.num_samples);
+    } else if (truncate_coverage) {
+        multisampling.pNext = &coverage_state;
+        LOG_INFO(Render_Vulkan, "Transparent coverage truncate ps={:#x} raster={} color={} depth={}",
+                 key.stage_hashes[u32(Shader::LogicalStage::Fragment)], raster_samples,
+                 key.color_samples[0], depth_samples);
     }
 
     const vk::PipelineViewportDepthClipControlCreateInfoEXT clip_control = {
@@ -362,7 +423,7 @@ GraphicsPipeline::GraphicsPipeline(
         .pTessellationState = &tessellation_state,
         .pViewportState = &viewport_info,
         .pRasterizationState = &raster_chain.get(),
-        .pMultisampleState = &sdata.multisampling,
+        .pMultisampleState = &multisampling,
         .pDepthStencilState =
             !instance.IsExtendedDynamicState3Supported() ? &depth_stencil_info : nullptr,
         .pColorBlendState = &color_blending,

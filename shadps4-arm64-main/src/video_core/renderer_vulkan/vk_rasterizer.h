@@ -45,6 +45,8 @@ public:
 
     /// Logs the next `count` guest draws, dispatches and markers. Debugging aid.
     static void StartDrawTrace(s32 count);
+    static void SetDiagnosticSkippedShader(u64 hash);
+    static void SetDiagnosticFeedbackShader(u64 hash);
 
     [[nodiscard]] VideoCore::BufferCache& GetBufferCache() noexcept {
         return buffer_cache;
@@ -166,6 +168,8 @@ private:
     using BufferBindingInfo = std::tuple<VideoCore::BufferId, AmdGpu::Buffer, u64>;
     boost::container::static_vector<BufferBindingInfo, Shader::NUM_BUFFERS> buffer_bindings;
     std::vector<std::unique_ptr<VideoCore::Buffer>> isolated_readconst_buffers;
+    std::vector<std::unique_ptr<VideoCore::Image>> diagnostic_feedback_images;
+    std::vector<std::unique_ptr<VideoCore::ImageView>> diagnostic_feedback_views;
     u32 isolated_readconst_hits{};
     using ImageBindingInfo = std::pair<VideoCore::ImageId, VideoCore::TextureCache::ImageDesc>;
     boost::container::small_vector<ImageBindingInfo, Shader::NUM_IMAGES> image_bindings;
