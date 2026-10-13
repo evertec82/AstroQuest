@@ -1,4 +1,4 @@
-AstroQuest PC VR v0.8.0
-Transparent-effect coverage correction and crash-report ZIP collection.
-Executable SHA256: C2E53F59EA7DA1F9EBE26C3768D762C51D1D5A7EFFCD9B1931CC6F72D8027499
-The executable is the exact locally tested coverage build. Its embedded base revision predates this package version.
+AstroQuest PC VR v0.8.5
+Merged upstream v0.21 and v0.21.1 (f7a3023).
+Retains full-refresh pacing, transparency corrections, timing fixes, higher resolutions and crash-report collection.
+See the release SHA256SUMS file for executable package identification.

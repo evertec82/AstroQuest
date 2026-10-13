@@ -44,7 +44,7 @@ option(ENABLE_SYSTEM_LIBRARIES "Enable building against system libraries" OFF)
 option(ENABLE_FEX_GUEST_CPU "Build the native ARM64 FEXCore guest CPU backend" OFF)
 # The headset of the machine the emulator runs on, through that machine's OpenXR runtime
 # (Virtual Desktop, SteamVR, ...): where the frames of an emulated PlayStation VR are shown.
-cmake_dependent_option(ENABLE_OPENXR "Show the emulated headset's frames in a headset of this machine" ON "WIN32;NOT ENABLE_BACHATA_RUNTIME" OFF)
+cmake_dependent_option(ENABLE_OPENXR "Show the emulated headset's frames in a headset of this machine" ON "WIN32 OR CMAKE_SYSTEM_NAME STREQUAL \"Linux\";NOT ENABLE_BACHATA_RUNTIME" OFF)
 set(FEXCORE_GUEST_CPU_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/runtime/sources/fex" CACHE PATH
     "Checked-out FEX source directory for the FEXCore guest CPU backend")
 set(FEXCORE_GUEST_CPU_BUILD_DIR "${CMAKE_CURRENT_SOURCE_DIR}/runtime/build/fexcore-smoke-build" CACHE PATH
@@ -1018,6 +1018,7 @@ set(CORE src/core/aerolib/stubs.cpp
           src/core/known_title.cpp
           src/core/known_title.h
           src/core/known_title_builds.h
+          src/core/known_title_scenes.h
           src/core/linker.cpp
          src/core/linker.h
          src/core/memory.cpp
@@ -1095,6 +1096,7 @@ set(SHADER_RECOMPILER src/shader_recompiler/profile.h
                       src/shader_recompiler/backend/spirv/emit_spirv_warp.cpp
                       src/shader_recompiler/backend/spirv/spirv_emit_context.cpp
                       src/shader_recompiler/backend/spirv/spirv_emit_context.h
+                      src/shader_recompiler/backend/spirv/spirv_scene_easu.cpp
                       src/shader_recompiler/frontend/translate/data_share.cpp
                       src/shader_recompiler/frontend/translate/export.cpp
                       src/shader_recompiler/frontend/translate/scalar_alu.cpp
@@ -1221,6 +1223,12 @@ set(VIDEO_CORE src/video_core/amdgpu/cb_db_extent.h
                src/video_core/renderer_vulkan/vk_presenter.h
                src/video_core/renderer_vulkan/vk_rasterizer.cpp
                src/video_core/renderer_vulkan/vk_rasterizer.h
+               src/video_core/renderer_vulkan/vk_gpu_profile.cpp
+               src/video_core/renderer_vulkan/vk_gpu_profile.h
+               src/video_core/renderer_vulkan/vk_foveation.cpp
+               src/video_core/renderer_vulkan/vk_foveation.h
+               src/video_core/renderer_vulkan/vk_title_upscale.cpp
+               src/video_core/renderer_vulkan/vk_title_upscale.h
                src/video_core/renderer_vulkan/readconst_snapshot_diag.h
                src/video_core/renderer_vulkan/vk_resource_pool.cpp
                src/video_core/renderer_vulkan/vk_resource_pool.h

@@ -3,6 +3,7 @@
 #pragma once
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <functional>
 #include <mutex>
 #include <thread>
@@ -26,6 +27,9 @@ public:
         available = wake && timer.IsHighResolution();
         if (available)
             worker = std::thread{[this] { Run(); }};
+#else
+        available = true;
+        worker = std::thread{[this] { Run(); }};
 #endif
     }
     ~PreciseTimerScheduler() {
@@ -37,6 +41,13 @@ public:
             worker.join();
         if (wake)
             CloseHandle(wake);
+#else
+        {
+            std::scoped_lock lock{mutex};
+            stop.store(true);
+        }
+        changed.notify_one();
+        if (worker.joinable()) worker.join();
 #endif
     }
     bool Available() const {
@@ -51,6 +62,8 @@ public:
         }
 #ifdef _WIN32
         SetEvent(wake);
+#else
+        changed.notify_one();
 #endif
         return true;
     }
@@ -99,8 +112,29 @@ private:
     }
     WindowsSleepTimer timer;
     HANDLE wake{};
-    std::thread worker;
+#else
+    void Run() {
+        std::unique_lock lock{mutex};
+        while (!stop.load()) {
+            if (queue.empty()) {
+                changed.wait(lock, [this] { return stop.load() || !queue.empty(); });
+                continue;
+            }
+            const auto deadline = queue.top().deadline;
+            if (Clock::now() < deadline) {
+                changed.wait_until(lock, deadline);
+                continue;
+            }
+            auto callback = queue.top().callback;
+            queue.pop();
+            lock.unlock();
+            callback();
+            lock.lock();
+        }
+    }
+    std::condition_variable changed;
 #endif
+    std::thread worker;
     std::atomic<bool> stop{false};
     bool available{};
     std::chrono::microseconds spin;

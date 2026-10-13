@@ -16,9 +16,9 @@ namespace Serialization {
 /* You should increment versions below once corresponding serialization scheme is changed. */
 // Preserve upstream 0.20 geometry-input ABI and invocation-ID correction.
 static constexpr u32 ShaderBinaryVersion = 3u;
-// Inline image/sampler lists replace pointer-containing small vectors.
-static constexpr u32 ShaderMetaVersion = 3u;
-static constexpr u32 PipelineKeyVersion = 3u;
+// Metadata and key layouts include both fork repairs and upstream runtime-info additions.
+static constexpr u32 ShaderMetaVersion = 4u;
+static constexpr u32 PipelineKeyVersion = 4u;
 } // namespace Serialization
 
 namespace Vulkan {

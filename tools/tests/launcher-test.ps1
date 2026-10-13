@@ -10,7 +10,7 @@ $ast = [System.Management.Automation.Language.Parser]::ParseFile($launcher, [ref
 foreach ($function in $ast.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $false)) {
     . ([scriptblock]::Create($function.Extent.Text))
 }
-$unpackFolder = ".unpacking"
+$unpackFolders = @(".u", ".unpacking")
 $madeFor = "CUSA12392"
 $realSfo = Join-Path $top "games\CUSA12392\sce_sys\param.sfo"
 $haveSfo = [System.IO.File]::Exists($realSfo)
@@ -67,9 +67,12 @@ if ($haveSfo) {
 $g = "$base\c3\games"; Make-Game "$g\CUSA12392-UPDATE" $true
 Check "c3 an update's folder alone is no game" (Find-Game $g) ""
 
-# d: only the leftovers of an unpacking
+# d: only the leftovers of an unpacking (where it is done now, and inside the game's folder,
+# where it was done before)
 $g = "$base\d\games"; Make-Game "$g\CUSA12392\.unpacking\files\uroot" $true
 Check "d  half-unpacked game is not taken" (Find-Game $g) ""
+$g = "$base\d2\games"; Make-Game "$g\.u\uroot" $true
+Check "d2 half-unpacked game beside the others is not taken" (Find-Game $g) ""
 
 # e: packages
 $g = "$base\e\games"
@@ -156,7 +159,7 @@ Check "Launcher clears inherited crop by default" $env:SHADPS4_VR_DESKTOP_CROP "
 
 foreach ($assignment in $ast.EndBlock.Statements) {
     if ($assignment -is [System.Management.Automation.Language.AssignmentStatementAst] -and
-        $assignment.Left.Extent.Text -in @('$widths', '$caps', '$gameLanguages')) {
+        $assignment.Left.Extent.Text -in @('$widths', '$consoleHeights', '$caps', '$gameLanguages')) {
         . ([scriptblock]::Create($assignment.Extent.Text))
     }
 }
@@ -184,6 +187,10 @@ Check "Higher resolution 3960 is offered" ($widths -contains 3960) $true
 Check "Higher resolution 4320 is offered" ($widths -contains 4320) $true
 Check "3960 eye height" (EyeHeight 3960) 4224
 Check "4320 eye height" (EyeHeight 4320) 4608
+# Sizes and frame rates offered.
+Check "The console's smaller sizes keep their own shape" ((@(816, 960, 1200) | ForEach-Object { EyeHeight $_ }) -join ",") "870,1080,1280"
+Check "Larger sizes keep the shape of 1440x1536" ((@(1440, 2880, 3600) | ForEach-Object { EyeHeight $_ }) -join ",") "1536,3072,3840"
+Check "80 frames a second is offered (a Rift S refreshes at 80 Hz)" ($caps -contains "80") $true
 
 # The Visual C++ runtime: looked for where a 64-bit program finds it, whatever PowerShell this is.
 $runtimeFolder = Join-Path $base "system"
@@ -242,8 +249,13 @@ function Show-Form($form) {
         }
     }
     Check "Desktop view and crop controls do not overlap" $view.Bounds.IntersectsWith($crop.Bounds) $false
+    $resolution = $form.Controls["resolution"]
+    $fps = $form.Controls["fps"]
     if ($script:menuAction -eq "choose") {
         Check "Menu defaults to Full framerate" $form.Controls["fps"].SelectedIndex 0
+        Check "Menu defaults to 2880 an eye" $widths[$resolution.Value] 2880
+        $resolution.Value = [array]::IndexOf($widths, 960)
+        $fps.SelectedIndex = [array]::IndexOf($caps, "80")
         Check "Menu defaults to Windows' language" $language.SelectedIndex 0
         $resolution.Value = $widths.Count - 1
         $language.SelectedIndex = 1 + [array]::IndexOf($gameLanguages, "fr-FR")
@@ -259,6 +271,8 @@ function Show-Form($form) {
     }
     Check "Menu restores highest resolution" $widths[$resolution.Value] 4320
     Check "Menu restores French" $language.SelectedIndex (1 + [array]::IndexOf($gameLanguages, "fr-FR"))
+    Check "Menu restores 4320 an eye" $widths[$resolution.Value] 4320
+    Check "Menu restores 80 frames a second" $caps[$fps.SelectedIndex] 80
     if ($script:menuAction -eq "restore") { $language.SelectedIndex = 0 }
     Check "Menu restores combined eyes" $view.SelectedIndex 2
     Check "Menu restores crop" $crop.Checked $true
@@ -275,6 +289,8 @@ Check "Menu saves combined eyes" (Setting "desktop_view") "combined"
 Check "Menu saves highest resolution" (Setting "resolution") "4320"
 Check "Menu saves French" (Setting "language") "fr-FR"
 Check "Menu saves crop" (Setting "desktop_crop") "1"
+Check "Menu saves 4320 an eye" (Setting "resolution") "4320"
+Check "Menu saves 80 frames a second" (Setting "fps") "80"
 $script:menuAction = "cancel"
 Check "Menu cancellation does not start game" (Show-Menu) $false
 $script:menuForm.Dispose()
@@ -291,4 +307,3 @@ Check "Menu saves uncropped image again" (Setting "desktop_crop") "0"
 [System.IO.Directory]::Delete($base, $true)
 "failed: $failed"
 if ($failed -gt 0) { exit 1 }
-

@@ -1,3 +1,5 @@
+> **Enhanced fork release v0.8.5:** incorporates upstream 0.21 and 0.21.1 while retaining our performance, transparency and crash-reporting changes. Windows users: [PC instructions](README-PC-VR.md). Standalone Quest users: [enhanced build instructions](README-QUEST-ENHANCED.md), including resolution and frame-pacing options. The upstream documentation follows below; its default 30 FPS setting differs from this fork's selectable full-framerate default.
+
 # AstroQuest
 
 This fork includes experimental PC VR performance changes: a separate Vulkan queue for
@@ -34,8 +36,8 @@ resolution under emulation.
 
 | | PlayStation 4 + PS VR | Quest 3 on its own | PC + Virtual Desktop |
 | --- | --- | --- | --- |
-| Frames a second | 60 | 30 in levels, 45 in lighter scenes | 60 (more if you ask for it) |
-| Picture per eye | 960x1080 to 1440x1536 | 816x870 to 1440x1536 | 1440x1536 up to 3600x3840 |
+| Frames a second | 60 | 30 | 60 (more if you ask for it) |
+| Picture per eye | 960x1080 to 1440x1536 | 816x870 to 1200x1280, enlarged to 1440x1536 with FSR 1 | 1440x1536 up to 3600x3840 |
 | Edges | multisampled | smoothed by a filter | multisampled |
 
 ## Status
@@ -84,7 +86,7 @@ Download `AstroQuest-<version>-Quest3.apk` from the
    debugging in the headset, and run
 
    ```sh
-   adb install -r AstroQuest-0.20-Quest3.apk
+   adb install -r AstroQuest-0.21.1-Quest3.apk
    ```
 
    (or drag the APK onto SideQuest).
@@ -109,9 +111,12 @@ Download `AstroQuest-<version>-Quest3.apk` from the
      (`PkgTool-0.2.231.zip`, free and open source; Windows, or the `PkgTool.Core` builds for
      Linux and macOS). `PkgTool pkg_extract --passcode 00000000000000000000000000000000 game.pkg out`
      puts the game in `out/uroot`: rename that folder `CUSA12392`. Then add the game's
-     description, which the package keeps apart: `PkgTool pkg_listentries game.pkg` shows the
-     number of `PARAM_SFO`, and `PkgTool pkg_extractentry game.pkg <number> CUSA12392/sce_sys/param.sfo`
-     writes it. Without `param.sfo` the emulator does not recognise the game.
+     description, which the package keeps apart: `PkgTool pkg_listentries game.pkg` lists the
+     package's entries, and the number to use is the one in the `Index` column of the
+     `PARAM_SFO` line (11 in the package tried here; not its `Offset`). Then
+     `PkgTool pkg_extractentry game.pkg <number> CUSA12392/sce_sys/param.sfo` writes it: a file
+     of a few kilobytes that starts with the letters `PSF`. Without it the emulator does not
+     recognise the game, and the app says so.
 
    Either way, only a package made from a dump of the game can be unpacked; one downloaded
    from the PlayStation Store is encrypted.
@@ -124,8 +129,10 @@ Download `AstroQuest-<version>-Quest3.apk` from the
 
 Playing:
 
-- The app begins with a menu for the field of view: a stick to a side chooses, ✕ / A or a
-  trigger starts the game.
+- The app begins with a menu: the field of view, the detail further away, foveated
+  rendering, how the picture is enlarged (FSR 1 or the game's own way) and the display's
+  refresh rate. Up and down go from line to line, a stick to a side chooses, ✕ / A or a
+  trigger starts the game. The defaults are the ones to start with.
 - **With a gamepad**: put the Touch controllers aside and hold it. The headset tracks your
   hands around it, and that is where the controller is in the game. A gamepad without motion
   sensors, which is every one that is not a PlayStation's, is turned and tilted in the game
@@ -135,8 +142,7 @@ Playing:
   controller's menu button is OPTIONS. X and Y together blow, where the game wants you to
   blow into the microphone.
 - **The touchpad, on the Touch controllers and on a gamepad that has none**, is on buttons
-  (a card in the headset says so when the game starts, and again whenever you press
-  OPTIONS):
+  (a card in the headset says so whenever you press OPTIONS):
   - **right trigger (R2): press it and hold**: the water cannon, the machine gun
   - **right grip (R1): swipe forward**: the hook, the throwing stars, the chests
   - **left trigger (L2): pull back, let go to shoot**: the catapult at the end of every
@@ -162,6 +168,11 @@ Playing:
 Your saves are kept in `/sdcard/Android/data/com.astrobotquest.vrhost/files/data/shadPS4/home/1000/savedata`.
 Updating the app with `adb install -r` keeps them; **uninstalling deletes them**, so copy that
 folder off the headset first (`adb pull`).
+
+**Removing it all.** Uninstalling the app does not remove a game copied to
+`/data/local/tmp/astro/games`: that folder is not the app's, and the headset's file manager
+does not show it. `adb shell rm -rf /data/local/tmp/astro` deletes it (about 13 GB). A game in
+`/sdcard/Android/data/com.astrobotquest.vrhost/files/games` goes with the app.
 
 ## Installing: PC VR through Virtual Desktop
 
@@ -200,7 +211,7 @@ games, and this repository does not include any game data.
 
 **Which headsets?** On the headset alone: Quest 3 (the Quest 3S has the same chip and should
 work; nobody has reported it yet). A Quest 2 or Pro has not been tried and is slower. On a
-PC: any headset with an OpenXR runtime on Windows, which is every Quest through Virtual
+PC: any headset with an OpenXR runtime on Windows (or SteamVR on Linux, see below), which is every Quest through Virtual
 Desktop or Steam Link, and PC headsets through SteamVR (Index, PS VR2 with its PC adapter,
 Bigscreen Beyond, Pimax and others have been reported working).
 
@@ -226,8 +237,10 @@ another from.
 0.19 (it looked in the wrong place when it was started from a 32-bit program), and its
 question now has a "start the game all the same".
 
-**Linux?** There is no Linux build of the PC version. A player reports it running through
-Steam's Proton with WiVRn; their recipe is in
+**Linux?** The emulator builds natively on Linux, with no release package yet; how to build
+and start it, and the SteamVR setting it needs, are in
+[README-PC-VR.md](README-PC-VR.md#linux-native-build). A player also reports the Windows
+build running through Steam's Proton with WiVRn; their recipe is in
 [README-PC-VR.md](README-PC-VR.md#linux-through-proton-as-reported).
 
 ## Building from source

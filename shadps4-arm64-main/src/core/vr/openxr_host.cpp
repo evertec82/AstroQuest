@@ -13,12 +13,14 @@
 #include <mutex>
 #include <thread>
 
+#ifdef _WIN32
 #include <windows.h>
 
 #include <mmdeviceapi.h>
 #include <objbase.h>
 #include <propidl.h>
 #include <unknwn.h>
+#endif
 
 #include <SDL3/SDL_events.h>
 
@@ -36,7 +38,9 @@
 #include "input/view_turn.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 
+#ifdef _WIN32
 #define XR_USE_PLATFORM_WIN32
+#endif
 #define XR_USE_GRAPHICS_API_VULKAN
 #include <openxr/openxr.h>
 #include <openxr/openxr_platform.h>
@@ -56,7 +60,7 @@ constexpr u32 NumCommandBuffers = 4;
 /// Pictures smaller than this, either way, are a title's way of showing nothing.
 constexpr u32 MinFrameSize = 64;
 
-/// What runtimes for Windows are known to want of a Vulkan device they share images with. It is
+/// What runtimes are known to want of a Vulkan device they share images with. It is
 /// enabled whenever a runtime is there, so that a headset that turns up after the renderer has
 /// made its device (the player starts the game first and puts the headset on then) can still be
 /// drawn to; what the runtime itself asks for comes on top once it can be asked.
@@ -69,10 +73,17 @@ constexpr const char* UsualInstanceExtensions[] = {
 constexpr const char* UsualDeviceExtensions[] = {
     "VK_KHR_dedicated_allocation",    "VK_KHR_get_memory_requirements2",
     "VK_KHR_bind_memory2",            "VK_KHR_external_memory",
+#ifdef _WIN32
     "VK_KHR_external_memory_win32",   "VK_KHR_external_semaphore",
     "VK_KHR_external_semaphore_win32", "VK_KHR_external_fence",
     "VK_KHR_external_fence_win32",    "VK_KHR_timeline_semaphore",
     "VK_KHR_win32_keyed_mutex",       "VK_KHR_image_format_list",
+#else
+    "VK_KHR_external_memory_fd",      "VK_KHR_external_semaphore",
+    "VK_KHR_external_semaphore_fd",   "VK_KHR_external_fence",
+    "VK_KHR_external_fence_fd",       "VK_KHR_timeline_semaphore",
+    "VK_KHR_image_format_list",
+#endif
     "VK_KHR_maintenance1",            "VK_KHR_maintenance2",
     "VK_KHR_multiview",               "VK_KHR_create_renderpass2",
 };
@@ -154,6 +165,7 @@ XrVector3f Rotate(const XrQuaternionf& q, const XrVector3f& v) {
     return {rotated.x, rotated.y, rotated.z};
 }
 
+#ifdef _WIN32
 std::string Narrow(const wchar_t* text) {
     const int size = WideCharToMultiByte(CP_UTF8, 0, text, -1, nullptr, 0, nullptr, nullptr);
     if (size <= 1) {
@@ -278,6 +290,7 @@ std::string ActiveAudioDeviceEnding(std::string_view ending, EDataFlow flow) {
     }
     return found;
 }
+#endif
 
 } // namespace
 
@@ -537,7 +550,9 @@ struct OpenXrHost::Impl {
         };
         hand_extension = track_hands && enable_if_offered(XR_EXT_HAND_TRACKING_EXTENSION_NAME);
         has_refresh_rate = enable_if_offered(XR_FB_DISPLAY_REFRESH_RATE_EXTENSION_NAME);
+#ifdef _WIN32
         has_audio_guid = enable_if_offered(XR_OCULUS_AUDIO_DEVICE_GUID_EXTENSION_NAME);
+#endif
 
         XrInstanceCreateInfo info{XR_TYPE_INSTANCE_CREATE_INFO};
         std::strcpy(info.applicationInfo.applicationName, "shadPS4");
@@ -667,10 +682,12 @@ struct OpenXrHost::Impl {
     }
 
     /// Where the headset's sound goes and comes from, by the names Windows lists the devices
-    /// under: a runtime that streams to a headset has devices of its own for that.
+    /// under: a runtime that streams to a headset has devices of its own for that. Elsewhere
+    /// the system's default devices.
     void FindAudioDevices() {
         std::string output_name;
         std::string input_name;
+#ifdef _WIN32
         if (has_audio_guid) {
             using Function = XrResult(XRAPI_PTR*)(XrInstance, wchar_t*);
             const auto output =
@@ -704,6 +721,7 @@ struct OpenXrHost::Impl {
                 input_name = std::move(microphone);
             }
         }
+#endif
         std::scoped_lock lock{names_mutex};
         if (audio_names_known && output_name == audio_output && input_name == audio_input) {
             return;

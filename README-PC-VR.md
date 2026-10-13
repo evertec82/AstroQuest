@@ -368,9 +368,9 @@ is optional.
 
 | Setting | Meaning |
 | --- | --- |
-| `resolution=2880` | the width of each eye's picture: `1440` (the console's largest), `1800`, `2160`, `2520`, `2880` (default), `3240`, `3600`; or `game` for the console's sizes chosen by the game. The game draws a step smaller by itself while the graphics card falls behind |
+| `resolution=2880` | the width of each eye's picture: `816`, `960`, `1200` (the console's smaller sizes, kept to: for a headset with fewer pixels, such as a Rift S), `1440` (the console's largest), `1800`, `2160`, `2520`, `2880` (default), `3240`, `3600`; or `game` for the console's sizes chosen by the game. From `1440` up the game draws a step smaller by itself while the graphics card falls behind |
 | `dynamic=0` | hold the game to the chosen size even where the graphics card falls behind |
-| `fps=60` | the most frames a second: `120`, `90`, `72`, `60` (default), `45`, `40`, `36`, `30`; what the headset's refresh rate allows (see "Speed") |
+| `fps=60` | the most frames a second: `120`, `90`, `80`, `72`, `60` (default), `45`, `40`, `36`, `30`; what the headset's refresh rate allows (see "Speed"; `80` for a Rift S at its 80 Hz) |
 | `fov=100` | how much of the headset's field of view the game draws, 70 to 100 percent: 100 fills all of it; less puts the same pixels over fewer degrees, sharper, with a dark border |
 | `fov_of=psvr` | `fov` is a percent of a PlayStation VR's field of view (100 by 103 degrees an eye, what the game was made for) instead of the headset's own (`fov_of=headset`, the default) |
 | `menu=0` | no window with the main settings at the start |
@@ -549,6 +549,34 @@ Things that had to be right, for whoever works on this again:
   Every port plays on a device of its own, never on "the default device" as such (see
   "Fixed and added in 0.19").
 
+## Fixed in 0.21.1 (2026-10-13)
+
+- **A crash at the last boss**, seen on the Quest: the emulator's texture cache let go of the
+  same image twice ("Trying to unregister an already unregistered image" in the log). It lets
+  go of images when memory runs short, which on a PC with a large graphics card happens rarely;
+  the fix is in the PC's build too (`README-QUEST-VR.md`, "App 0.21.1").
+
+## Fixed and added in 0.21 (2026-10-13)
+
+- **A game package that stopped unpacking partway** (issue #28): in an AstroQuest folder whose
+  path had more than about 93 characters, the launcher let the unpacking start, and PkgTool
+  stopped a few seconds in on a path too long for Windows, with a message that wrongly blamed
+  an encrypted package. Packages are now unpacked into `games\.u`, where no path is longer
+  than the game's own will be, and a path that is still too long is named as such.
+- **80 frames a second and the console's smaller pictures in the launcher** (issue #22): the
+  Rift S refreshes 80 times a second, which the launcher did not offer; and the picture an eye
+  can now also be 816, 960 or 1200 pixels wide, the sizes the console itself chooses from, for
+  a PC that cannot hold 1440.
+- **Native Linux** (pull request #27 by justinlindh, issue #13): the OpenXR host builds and
+  runs on Linux; see "Linux, native build" below.
+- **A wait between drawing passes that was missing**: the game draws both eyes into one depth
+  buffer, and the second eye's clear followed the first eye's drawing without a barrier. On
+  the Quest that made black squares in the right eye (`README-QUEST-VR.md`, "Also in 0.21: no
+  more black squares"); on the PCs tried here it never showed, but the wait is there now too.
+- The emulator's work for every draw is smaller (the pipeline and texture lookups take
+  shortcuts, draws that write nothing are left out), made for the Quest and in the PC's build
+  as well.
+
 ## Fixed in 0.20 (2026-10-06): two things in world 2
 
 - **An invisible wall at the end of level 2-1** (issue #16): the hero stood in the air above
@@ -620,9 +648,51 @@ Reports from the project's thread on Reddit and from the comments under the vide
   folder it is about; started any other way, it came. It is only asked now where there is
   something to move.
 
+## Linux, native build
+
+The emulator builds and runs natively on Linux, with the same OpenXR host as on Windows.
+There is no release package and no launcher for it: build it and set the launcher's
+environment variables yourself. Tried on x86-64 with a Valve Index through SteamVR on an
+NVIDIA card.
+
+1. Build it, with clang, CMake and Ninja, from a clone made with its submodules (see
+   "Building from source" in README.md); SDL needs the usual X11, Wayland, ALSA and
+   PulseAudio development packages:
+
+   ```sh
+   cd shadps4-arm64-main
+   cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
+   cmake --build build
+   ```
+
+2. **Turn on SteamVR's asynchronous reprojection.** SteamVR on Linux leaves it off, and
+   without it the frames the game draws for every other refresh are shown again as drawn,
+   not turned to where the head is: the picture judders whenever the head moves (the
+   window on the desktop looks right all the same). With SteamVR closed, add
+   `"enableLinuxVulkanAsync" : true` to the `"steamvr"` section of
+   `~/.local/share/Steam/config/steamvr.vrsettings` (under `~/.var/app/com.valvesoftware.Steam/`
+   for Steam from Flatpak). Its log (`logs/vrcompositor.txt` next to `config`) then says
+   `Enabling async support!`. Set the refresh rate as for the Index above: 120 Hz for the
+   game's 60 frames a second.
+3. Make SteamVR the OpenXR runtime (SteamVR's Settings > OpenXR), and the headset's
+   speakers and microphone the system's default devices: the emulator plays to the default
+   output.
+4. Start SteamVR, then the emulator. It keeps its settings and saves in a `user` folder in
+   the folder it is started from if there is one, otherwise in `$XDG_DATA_HOME/shadPS4`
+   (`~/.local/share/shadPS4`):
+
+   ```sh
+   SHADPS4_OPENXR=1 SHADPS4_XR_WAIT=60 SHADPS4_TITLE_EYE_WIDTH=2880 SHADPS4_VR_FPS_CAP=60 \
+   SHADPS4_VR_FOV=100 SHADPS4_VR_FOV_OF=headset SHADPS4_VR_SHARPEN=0.3 \
+   /path/to/shadps4-arm64-main/build/shadps4 -g /path/to/games/CUSA12392/eboot.bin
+   ```
+
+   The settings of "Settings" above are these variables; `pc-vr/launch.ps1` shows which
+   variable each one sets.
+
 ## Linux, through Proton, as reported
 
-There is no Linux build of the PC version, and none of this has been tried here. A player
+The native build above is the more direct way; none of this has been tried here. A player
 (klejmanm, on Reddit) reports the Windows build running on Arch and Mint with Radeon RX
 6000/7000 cards, shown in a Quest through WiVRn, when it is started by Steam and not by a
 script of one's own (Wine's OpenXR layer got in the way otherwise):
@@ -843,7 +913,7 @@ bash tools/make-pc-vr.sh                                                   # cop
 ```
 
 The OpenXR loader (Khronos OpenXR-SDK 1.1.63, `externals/openxr-sdk`) is built with the
-emulator; `ENABLE_OPENXR` (on for Windows) switches the whole of it.
+emulator; `ENABLE_OPENXR` (on for Windows and Linux) switches the whole of it.
 
 
 ## Crash reports
@@ -869,3 +939,5 @@ Older release titles are numbered chronologically; their original links and asse
 | v0.6.0 | Full framerate and higher resolutions |
 | v0.7.0 | Timer and desktop mirror improvements |
 | v0.8.0 | Transparent-effect seams and crash-report ZIPs |
+
+| v0.8.5 | Upstream 0.21.1, Quest display controls and rendering/cache fixes |
