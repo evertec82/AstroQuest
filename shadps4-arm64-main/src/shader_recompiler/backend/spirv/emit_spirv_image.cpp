@@ -88,6 +88,58 @@ struct ImageOperands {
     boost::container::static_vector<Id, 4> operands;
 };
 
+// Some mobile drivers corrupt implicit samples. Explicit derivatives preserve mip
+// selection, including instruction bias, without forcing the highest-detail mip.
+static bool AddImplicitGradients(EmitContext& ctx, ImageOperands& operands,
+                                 AmdGpu::ImageType type, bool hosted_2d, Id coords, Id bias) {
+    static const bool enabled = std::getenv("SHADPS4_EXPLICIT_TEXTURE_GRADIENTS") != nullptr;
+    if (!enabled) return false;
+    static const bool base_level = [] {
+        const char* mode = std::getenv("SHADPS4_EXPLICIT_TEXTURE_GRADIENTS");
+        return mode && std::string_view{mode} == "base";
+    }();
+    if (base_level) {
+        operands.Add(spv::ImageOperandsMask::Lod, ctx.f32_zero_value);
+        return true;
+    }
+    u32 dimensions = 0;
+    Id spatial = coords;
+    switch (type) {
+    case AmdGpu::ImageType::Color1D:
+        dimensions = hosted_2d ? 2 : 1;
+        break;
+    case AmdGpu::ImageType::Color1DArray:
+        dimensions = hosted_2d ? 2 : 1;
+        spatial = hosted_2d ? ctx.OpVectorShuffle(ctx.F32[2], coords, coords, 0, 1)
+                            : ctx.OpCompositeExtract(ctx.F32[1], coords, 0);
+        break;
+    case AmdGpu::ImageType::Color2D:
+        dimensions = 2;
+        break;
+    case AmdGpu::ImageType::Color2DArray:
+        dimensions = 2;
+        spatial = ctx.OpVectorShuffle(ctx.F32[2], coords, coords, 0, 1);
+        break;
+    case AmdGpu::ImageType::Color3D:
+        dimensions = 3;
+        break;
+    default:
+        return false;
+    }
+    const Id derivative_type = ctx.F32[dimensions];
+    Id dx = ctx.OpDPdx(derivative_type, spatial);
+    Id dy = ctx.OpDPdy(derivative_type, spatial);
+    if (Sirit::ValidId(bias)) {
+        const Id scale = ctx.OpExp2(ctx.F32[1], bias);
+        dx = dimensions == 1 ? ctx.OpFMul(derivative_type, dx, scale)
+                             : ctx.OpVectorTimesScalar(derivative_type, dx, scale);
+        dy = dimensions == 1 ? ctx.OpFMul(derivative_type, dy, scale)
+                             : ctx.OpVectorTimesScalar(derivative_type, dy, scale);
+    }
+    operands.AddDerivatives(ctx, dx, dy);
+    return true;
+}
+
 Id EmitImageSampleRaw(EmitContext& ctx, IR::Inst* inst, u32 handle, Id address1, Id address2,
                       Id address3, Id address4) {
     UNREACHABLE_MSG("Unreachable instruction");
@@ -101,6 +153,13 @@ Id EmitImageSampleImplicitLod(EmitContext& ctx, IR::Inst* inst, u32 handle, Id c
     const Id sampler = ctx.OpLoad(ctx.sampler_type, ctx.samplers[handle >> 16]);
     const Id sampled_image = ctx.OpSampledImage(texture.sampled_type, image, sampler);
     ImageOperands operands;
+    if (AddImplicitGradients(ctx, operands, texture.view_type, texture.is_1d_hosted_as_2d,
+                             coords, bias)) {
+        operands.AddOffset(ctx, offset);
+        const Id value = ctx.OpImageSampleExplicitLod(result_type, sampled_image, coords,
+                                                      operands.mask, operands.operands);
+        return texture.is_integer ? ctx.OpBitcast(ctx.F32[4], value) : value;
+    }
     operands.Add(spv::ImageOperandsMask::Bias, bias);
     operands.AddOffset(ctx, offset);
     const Id sample = ctx.OpImageSampleImplicitLod(result_type, sampled_image, coords,
@@ -139,6 +198,15 @@ Id EmitImageSampleDrefImplicitLod(EmitContext& ctx, IR::Inst* inst, u32 handle, 
     const Id sampler = ctx.OpLoad(ctx.sampler_type, ctx.samplers[handle >> 16]);
     const Id sampled_image = ctx.OpSampledImage(texture.sampled_type, image, sampler);
     ImageOperands operands;
+    if (AddImplicitGradients(ctx, operands, texture.view_type, texture.is_1d_hosted_as_2d,
+                             coords, bias)) {
+        operands.AddOffset(ctx, offset);
+        const Id value = ctx.OpImageSampleDrefExplicitLod(result_type, sampled_image, coords, dref,
+                                                          operands.mask, operands.operands);
+        const Id typed = texture.is_integer ? ctx.OpBitcast(ctx.F32[1], value) : value;
+        return ctx.OpCompositeConstruct(ctx.F32[4], typed, ctx.f32_zero_value,
+                                        ctx.f32_zero_value, ctx.f32_zero_value);
+    }
     operands.Add(spv::ImageOperandsMask::Bias, bias);
     operands.AddOffset(ctx, offset);
     const Id sample = ctx.OpImageSampleDrefImplicitLod(result_type, sampled_image, coords, dref,

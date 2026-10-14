@@ -296,6 +296,9 @@ bool Instance::CreateDevice() {
     // push_descriptor_props stays zero-initialized (MaxPushDescriptors()==0) and all
     // descriptor-set layouts fall back to the non-push path with a DescriptorHeap.
     push_descriptor = add_extension(VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME);
+    if (!push_descriptor) {
+        push_descriptor_props.maxPushDescriptors = 0;
+    }
     // VK_EXT_vertex_attribute_divisor is also optional. When unavailable, instanced
     // (step-rate) vertex fetch silently degrades to per-vertex (divisor=1). Per-vertex
     // attributes are unaffected. Mali/Immortalis drivers do not expose this extension.

@@ -159,6 +159,8 @@ private:
             }
             return present;
         };
+        has_pico_controllers = enable_if_present(XR_BD_CONTROLLER_INTERACTION_EXTENSION_NAME);
+        has_pico_ultra_controllers = enable_if_present(XR_BD_ULTRA_CONTROLLER_INTERACTION_EXTENSION_NAME);
         has_refresh_rate = enable_if_present(XR_FB_DISPLAY_REFRESH_RATE_EXTENSION_NAME);
         has_performance = enable_if_present(XR_EXT_PERFORMANCE_SETTINGS_EXTENSION_NAME);
         has_thread_settings = enable_if_present(XR_KHR_ANDROID_THREAD_SETTINGS_EXTENSION_NAME);
@@ -431,15 +433,30 @@ private:
                                              : "/user/hand/right/input/aim/pose");
         bind(act_rumble, "/user/hand/left/output/haptic");
         bind(act_rumble, "/user/hand/right/output/haptic");
-        // (The profile every controller of this make answers to, whatever its generation.)
-        XrInteractionProfileSuggestedBinding suggested{
-            XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
-        xrStringToPath(instance, "/interaction_profiles/oculus/touch_controller",
-                       &suggested.interactionProfile);
-        suggested.countSuggestedBindings = static_cast<uint32_t>(bindings.size());
-        suggested.suggestedBindings = bindings.data();
-        if (!Check(xrSuggestInteractionProfileBindings(instance, &suggested),
-                   "xrSuggestInteractionProfileBindings")) {
+        // These profiles share the controls used here. A runtime may reject another
+        // vendor's profile; that must not prevent attaching its own controller actions.
+        std::vector<const char*> profiles{"/interaction_profiles/oculus/touch_controller"};
+        if (has_pico_controllers) {
+            profiles.push_back("/interaction_profiles/bytedance/pico_neo3_controller");
+            profiles.push_back("/interaction_profiles/bytedance/pico4_controller");
+        }
+        if (has_pico_ultra_controllers) {
+            profiles.push_back("/interaction_profiles/bytedance/pico_ultra_controller_bd");
+        }
+        bool bound = false;
+        for (const char* profile : profiles) {
+            XrInteractionProfileSuggestedBinding suggested{
+                XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
+            if (XR_FAILED(xrStringToPath(instance, profile, &suggested.interactionProfile))) {
+                continue;
+            }
+            suggested.countSuggestedBindings = static_cast<uint32_t>(bindings.size());
+            suggested.suggestedBindings = bindings.data();
+            const XrResult result = xrSuggestInteractionProfileBindings(instance, &suggested);
+            LOGI("controller profile %s: %d", profile, static_cast<int>(result));
+            bound |= XR_SUCCEEDED(result);
+        }
+        if (!bound) {
             return;
         }
         XrSessionActionSetsAttachInfo attach{XR_TYPE_SESSION_ACTION_SETS_ATTACH_INFO};
@@ -1927,6 +1944,8 @@ private:
     XrSession session{XR_NULL_HANDLE};
     XrSpace local_space{XR_NULL_HANDLE};
     XrSpace view_space{XR_NULL_HANDLE};
+    bool has_pico_controllers{};
+    bool has_pico_ultra_controllers{};
     bool has_refresh_rate{};
     bool has_swapchain_state{};
     int32_t recommended_width{};

@@ -837,6 +837,7 @@ public class MainActivity extends Activity
                 env.add("SHADPS4_TITLE_RESOLUTION=" + resolution);
             }
             env.add("SHADPS4_VR_FASTEST_PACE=1");
+            if (getPackageName().endsWith(".pico")) env.add("SHADPS4_EXPLICIT_TEXTURE_GRADIENTS=base");
             if (!realTime) {
                 env.add("SHADPS4_TITLE_TIMESTEP=0");
             }

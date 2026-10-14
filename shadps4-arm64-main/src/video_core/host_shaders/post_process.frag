@@ -42,7 +42,7 @@ vec3 shown(vec2 at) {
 }
 
 void main() {
-    vec4 color_linear = texture(texSampler, uv);
+    vec4 color_linear = textureLod(texSampler, uv, 0.0);
     vec3 here = pp.hdr || pp.encoded_in ? color_linear.rgb : gamma(color_linear.rgb);
     vec2 from_middle = uv * 2.0 - 1.0;
     float sharpen = dot(from_middle, from_middle) < pp.centre_radius * pp.centre_radius
