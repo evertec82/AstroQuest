@@ -73,6 +73,7 @@ static void CheckSoccerTiming(const Build& build, std::vector<u8> image,
         std::memcpy(&relative, image.data() + at + 4, sizeof(relative));
         correct_targets &= opcode == 0x0510fac5 && at + 8 + relative == build.soccer_nominal_seconds;
     }
+    Check(Apply(image, changes) != nullptr, name + ": patch cannot be applied twice");
     Check(correct_targets, name + ": both budget reads load the immutable console frame unit");
     auto restored = image;
     for (const Change& change : changes) {

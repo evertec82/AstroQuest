@@ -1,4 +1,4 @@
-> **Enhanced fork release v0.8.5:** incorporates upstream 0.21 and 0.21.1 while retaining our performance, transparency and crash-reporting changes. Windows users: [PC instructions](README-PC-VR.md). Standalone Quest users: [enhanced build instructions](README-QUEST-ENHANCED.md), including resolution and frame-pacing options. The upstream documentation follows below; its default 30 FPS setting differs from this fork's selectable full-framerate default.
+> **Enhanced fork release v0.8.6:** adds the game 1.04 soccer-enemy timing fix and incorporates upstream 0.21 and 0.21.1 while retaining our performance, transparency and crash-reporting changes. Windows users: [PC instructions](README-PC-VR.md). Standalone Quest users: [enhanced build instructions](README-QUEST-ENHANCED.md), including resolution and frame-pacing options. The upstream documentation follows below; its default 30 FPS setting differs from this fork's selectable full-framerate default.
 
 # AstroQuest
 

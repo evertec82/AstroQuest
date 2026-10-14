@@ -1,4 +1,3 @@
-AstroQuest PC VR v0.8.5
-Merged upstream v0.21 and v0.21.1 (f7a3023).
-Retains full-refresh pacing, transparency corrections, timing fixes, higher resolutions and crash-report collection.
-See the release SHA256SUMS file for executable package identification.
+AstroQuest PC VR v0.8.6
+Adds guarded soccer-enemy animation timing correction for game 1.04; retains 1.00 support and all v0.8.5 changes.
+Verified against both executable versions; gameplay confirmation pending.

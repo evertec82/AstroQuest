@@ -109,6 +109,7 @@ struct Build {
     /// corresponding instructions have not been verified in that game build.
     u64 soccer_nominal_seconds{};
     std::array<u64, 2> soccer_budget_reads{};
+    u64 soccer_budget_instruction{0xffffda688510fac5};
 };
 
 inline constexpr std::array<Build, 2> Known{{
@@ -172,6 +173,9 @@ inline constexpr std::array<Build, 2> Known{{
                           {0xcb09d7, 0x5cefe80000276087, 0x27608789207f8b49, 8},
                           {0xcb09df, 0x0004, 0x0000, 2},
                           {0, 0, 0, 0}}},
+        .soccer_nominal_seconds = 0x115bfb4,
+        .soccer_budget_reads = {0x8a1563, 0x8a1d1a},
+        .soccer_budget_instruction = 0xffffd9088510fac5,
     },
 }};
 
@@ -247,7 +251,7 @@ inline std::vector<Change> PhysicsStepChanges(const Build& build) {
 /// a budget intended for 60 FPS shrinks to 5/6 and the check at MupSoccerEnemy.cpp:1650
 /// can assert. Read the immutable console frame unit for those conversions only. Elapsed
 /// time integration, animation playback, the null-resource branch and assertion remain.
-/// Verified for 1.00; do not infer 1.04 code locations from the other build.
+/// Verified against the 1.00 and 1.04 executables; each has its own addresses and stack offset.
 inline std::vector<Change> SoccerTimingChanges(const Build& build) {
     if (build.soccer_nominal_seconds == 0) {
         return {};
@@ -256,9 +260,9 @@ inline std::vector<Change> SoccerTimingChanges(const Build& build) {
         {build.soccer_nominal_seconds, 0x3c888889, 0x3c888889, 4},
     };
     for (const u64 at : build.soccer_budget_reads) {
-        // vmovss xmm0, [rbp-0x2598] -> vmovss xmm0, [rip+console_frame_seconds]
+        // vmovss xmm0, [rbp+build-specific offset] -> vmovss xmm0, [rip+console_frame_seconds]
         const u64 displacement = static_cast<u32>(build.soccer_nominal_seconds - (at + 8));
-        changes.push_back({at, 0xffffda688510fac5, (displacement << 32) | 0x0510fac5, 8});
+        changes.push_back({at, build.soccer_budget_instruction, (displacement << 32) | 0x0510fac5, 8});
     }
     return changes;
 }
