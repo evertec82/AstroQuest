@@ -186,6 +186,16 @@ public:
     /// the last asking, in seconds, 0 where none was noted or the system does not tell.
     static void NoteGpuThreadFrame(std::chrono::nanoseconds time);
     static double TakeGpuThreadTime();
+
+    /// What the process uses of a graphics card's own memory, and what the system lets it have
+    /// (bytes), as last read; both 0 where the memory is the system's own (a headset, an
+    /// integrated GPU) or cannot be read.
+    static void NoteVideoMemory(u64 used, u64 budget);
+    struct VideoMemoryUse {
+        u64 used;
+        u64 budget;
+    };
+    static VideoMemoryUse VideoMemory();
 };
 
 /// True when SHADPS4_TRACE_SYNC is set: submissions and fence operations are then written to

@@ -31,6 +31,8 @@ bool g_should_append = false;
 
 static std::shared_ptr<spdlog_stdout> g_console_sink;
 static std::shared_ptr<LogFileSink> g_shad_file_sink;
+// The queue the lines wait in for the thread that writes them, when the log is not synchronous.
+static std::shared_ptr<spdlog::sinks::async_sink> g_async_sink;
 
 std::unordered_map<std::string_view, std::shared_ptr<spdlog::logger>> ALL_LOGGERS{
     {Class::Common, nullptr},
@@ -247,6 +249,13 @@ void Shutdown() {
 }
 
 void Flush() {
+    // The last lines before a crash are still in the queue: they are let through first, for a
+    // while at most (the thread that would write them may be the one that is failing).
+    if (const auto async_sink = g_async_sink; async_sink != nullptr) {
+        async_sink->flush();
+        (void)async_sink->wait_all(std::chrono::milliseconds{1000});
+    }
+
     if (g_shad_file_sink != nullptr) {
         g_shad_file_sink->flush();
     }
@@ -279,8 +288,9 @@ void Terminate() {
 void UpdateSinks() {
     std::initializer_list<spdlog::sink_ptr> sinks{g_console_sink, g_shad_file_sink};
 
-    std::initializer_list<spdlog::sink_ptr> async_sink{std::make_shared<spdlog::sinks::async_sink>(
-        spdlog::sinks::async_sink::config{.sinks = sinks})};
+    g_async_sink = std::make_shared<spdlog::sinks::async_sink>(
+        spdlog::sinks::async_sink::config{.sinks = sinks});
+    std::initializer_list<spdlog::sink_ptr> async_sink{g_async_sink};
 
     std::initializer_list<spdlog::sink_ptr> dup_filter{
         std::make_shared<spdlog::sinks::dup_filter_sink_mt>(

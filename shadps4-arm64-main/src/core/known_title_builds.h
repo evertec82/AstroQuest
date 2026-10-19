@@ -105,6 +105,15 @@ struct Build {
     /// The end of the function that has that world take a step (PhysicsStepChanges); places
     /// of no bytes fill the list up.
     std::array<Change, 4> physics_step;
+    /// The soccer robots' update (MupSoccerEnemy, in 2-2 and two other levels) counts how long
+    /// they stay in each state in the console's frames, from soccer_enemies.xml, and makes
+    /// seconds of them with the time step it is given. With a shorter step than the console's
+    /// (more than 60 frames a second) they change state sooner, its own check that a state
+    /// lasts as long as its animation fails, and the game crashes after it (issue #23). Each
+    /// place reads the step from the stack for that: it is to read a constant of the build's
+    /// own instead, 1/60 s (FrameCountChanges). The one place that takes the step for the time
+    /// that passed is left as it is.
+    std::array<Change, 6> frame_counts;
 };
 
 inline constexpr std::array<Build, 2> Known{{
@@ -136,6 +145,14 @@ inline constexpr std::array<Build, 2> Known{{
                           {0xc2dea8, 0x0449bfe900002760, 0x000449c0e8575750, 8},
                           {0xc2deb0, 0x9090909090909000, 0x0027608789585f5f, 8},
                           {0xc2deb8, 0x9090909090909090, 0x909090909090c300, 8}}},
+        // vmovss xmm0, [rbp-0x2598] / vmulss xmm2, xmm2 (or xmm6), [rbp-0x2598] become the
+        // same from [rip+...]: the float 1/60 at 0x10d1694 (read-only).
+        .frame_counts = {{{0x843133, 0xffffda688510fac5, 0x0088e5590510fac5, 8},
+                          {0x8432d0, 0xffffda689559eac5, 0x0088e3bc1559eac5, 8},
+                          {0x8438ea, 0xffffda688510fac5, 0x0088dda20510fac5, 8},
+                          {0x8439d1, 0xffffda689559eac5, 0x0088dcbb1559eac5, 8},
+                          {0x843a01, 0xffffda689559cac5, 0x0088dc8b1559cac5, 8},
+                          {0x843a2b, 0xffffda689559eac5, 0x0088dc611559eac5, 8}}},
     },
     {
         .name = "1.04, the last update",
@@ -166,6 +183,13 @@ inline constexpr std::array<Build, 2> Known{{
                           {0xcb09d7, 0x5cefe80000276087, 0x27608789207f8b49, 8},
                           {0xcb09df, 0x0004, 0x0000, 2},
                           {0, 0, 0, 0}}},
+        // The same with [rbp-0x26f8]; the float 1/60 at 0x115bfb4.
+        .frame_counts = {{{0x8a1563, 0xffffd9088510fac5, 0x008baa490510fac5, 8},
+                          {0x8a1700, 0xffffd9089559eac5, 0x008ba8ac1559eac5, 8},
+                          {0x8a1d1a, 0xffffd9088510fac5, 0x008ba2920510fac5, 8},
+                          {0x8a1dd9, 0xffffd9089559eac5, 0x008ba1d31559eac5, 8},
+                          {0x8a1e09, 0xffffd9089559cac5, 0x008ba1a31559cac5, 8},
+                          {0x8a1e33, 0xffffd9089559eac5, 0x008ba1791559eac5, 8}}},
     },
 }};
 
@@ -234,6 +258,11 @@ inline std::vector<Change> PhysicsStepChanges(const Build& build) {
         }
     }
     return changes;
+}
+
+/// The soccer robots' frame counts made seconds of at the console's frame (Build::frame_counts).
+inline std::vector<Change> FrameCountChanges(const Build& build) {
+    return {build.frame_counts.begin(), build.frame_counts.end()};
 }
 
 /// The first of some places that does not hold what the console's build has there (or lies

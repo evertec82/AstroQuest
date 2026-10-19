@@ -50,6 +50,13 @@ static std::vector<u8> MadeUp(const Build& build) {
     for (const Change& change : PhysicsStepChanges(build)) {
         std::memcpy(image.data() + change.at, &change.was, change.bytes);
     }
+    for (const Change& change : FrameCountChanges(build)) {
+        std::memcpy(image.data() + change.at, &change.was, change.bytes);
+        // And the constant they are to read.
+        s32 distance = 0;
+        std::memcpy(&distance, reinterpret_cast<const u8*>(&change.now) + 4, sizeof(distance));
+        Put(image, change.at + 8 + distance, ConsoleFrameSeconds);
+    }
     return image;
 }
 
@@ -63,6 +70,45 @@ static u64 CallTarget(std::span<const u8> code, u64 at) {
         }
     }
     return 0;
+}
+
+/// The soccer robots' frame counts: every place reads the same stack slot as a VEX instruction
+/// of eight bytes, and is to read, with the same instruction, a constant 8 bytes on that holds
+/// 1/60 as a float (where the image has it: made-up images hold nothing there).
+static void CheckFrameCounts(const Build& build, std::vector<u8> image, const std::string& name) {
+    const auto changes = FrameCountChanges(build);
+    Check(changes.size() == 6, name + ": the soccer robots' frame counts in 6 places");
+    bool same_slot = true;
+    bool same_instruction = true;
+    bool one_constant = true;
+    bool constant_holds = true;
+    u64 constant = 0;
+    for (const Change& change : changes) {
+        u8 was[8];
+        u8 now[8];
+        std::memcpy(was, &change.was, 8);
+        std::memcpy(now, &change.now, 8);
+        same_slot &= change.bytes == 8 && was[0] == 0xc5 && (was[3] & 0xc7) == 0x85 &&
+                     (change.was >> 32) == (changes[0].was >> 32);
+        same_instruction &= std::memcmp(was, now, 3) == 0 && (now[3] & 0xc7) == 0x05 &&
+                            (now[3] & 0x38) == (was[3] & 0x38);
+        s32 distance = 0;
+        std::memcpy(&distance, now + 4, sizeof(distance));
+        const u64 at = change.at + 8 + distance;
+        one_constant &= constant == 0 || constant == at;
+        constant = at;
+        if (at + 4 <= image.size()) {
+            float value = 0.0f;
+            std::memcpy(&value, image.data() + at, sizeof(value));
+            constant_holds &= value == ConsoleFrameSeconds;
+        }
+    }
+    Check(same_slot, name + ": each reads the step from the same place on the stack");
+    Check(same_instruction, name + ": each is to be the same instruction from rip+...");
+    Check(one_constant, name + ": all of them read one constant");
+    Check(constant_holds, name + ": which holds 1/60 where the image has it");
+    Check(Apply(image, changes) == nullptr && Recognise(image) == &build,
+          name + ": written whole, and still recognised");
 }
 
 /// The physics step of a build, changed: written once and whole, into one run of bytes that
@@ -219,6 +265,7 @@ int main(int argc, char** argv) {
         Check(Apply(image, beyond) == &beyond[0], name + ": nothing written beyond the image");
 
         CheckPhysicsStep(build, image, name);
+        CheckFrameCounts(build, image, name);
         // What the game is told apart by does not depend on it.
         std::vector<u8> stepped = image;
         Check(Apply(stepped, PhysicsStepChanges(build)) == nullptr &&
@@ -246,6 +293,7 @@ int main(int argc, char** argv) {
             Check(Apply(larger, SizeChanges(*build, Doubled())) == nullptr,
                   std::string{"larger sizes written into "} + argv[i]);
             CheckPhysicsStep(*build, image, argv[i]);
+            CheckFrameCounts(*build, image, argv[i]);
         }
     }
 

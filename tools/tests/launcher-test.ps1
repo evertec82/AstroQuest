@@ -11,7 +11,7 @@ foreach ($function in $ast.FindAll({ $args[0] -is [System.Management.Automation.
     . ([scriptblock]::Create($function.Extent.Text))
 }
 $unpackFolders = @(".u", ".unpacking")
-$madeFor = "CUSA12392"
+$madeFor = @("CUSA12392", "CUSA12431")
 $realSfo = Join-Path $top "games\CUSA12392\sce_sys\param.sfo"
 $haveSfo = [System.IO.File]::Exists($realSfo)
 $base = Join-Path $top "build\launcher-test"
@@ -57,6 +57,20 @@ Check "b  two folders down, brackets in the name" (Find-Game $g) "$g\[ABC] my du
 if ($haveSfo) {
     $g = "$base\c\games"; Make-Game "$g\Another" $false; Make-Game "$g\Zzz" $true
     Check "c  prefers CUSA12392 among two" (Find-Game $g) "$g\Zzz\eboot.bin"
+}
+
+# c1: the American release (#35), its param.sfo made from the European one's
+if ($haveSfo) {
+    $g = "$base\c1\games"; Make-Game "$g\Another" $false; Make-Game "$g\Zzz" $true
+    $sfo = "$g\Zzz\sce_sys\param.sfo"
+    $bytes = [System.IO.File]::ReadAllBytes($sfo)
+    $text = [System.Text.Encoding]::ASCII.GetString($bytes)
+    foreach ($at in @([regex]::Matches($text, "CUSA12392") | ForEach-Object { $_.Index })) {
+        [System.Text.Encoding]::ASCII.GetBytes("CUSA12431").CopyTo($bytes, $at)
+    }
+    [System.IO.File]::WriteAllBytes($sfo, $bytes)
+    Check "c1 param.sfo: the American serial" (Get-GameInfo "$g\Zzz\eboot.bin")["TITLE_ID"] "CUSA12431"
+    Check "c1 prefers CUSA12431 among two" (Find-Game $g) "$g\Zzz\eboot.bin"
 }
 
 # c2: the game's update in a folder of its own beside it, found first by its name

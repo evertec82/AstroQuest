@@ -49,6 +49,9 @@ public:
         vk::Queue queue;
         u32 queue_family{};
         u32 queue_index{};
+        /// The timeline the title's GPU work signals. A runtime with a queue of its own (any
+        /// other than index 0, the title's) has its copies wait on it for the frames they read.
+        vk::Semaphore title_timeline;
     };
     /// Starts the thread that keeps the session with the headset going on the renderer's device.
     void Start(const Graphics& graphics);
@@ -70,9 +73,9 @@ public:
     /// `width` by `height` in FrameFormat. Nothing while no headset is showing frames. For the
     /// thread that draws.
     std::optional<Target> BeginFrame(u32 width, u32 height);
-    /// The GPU has finished the frame drawn to target `index`, and its image has been left in
-    /// the General layout.
-    void EndFrame(u32 index, const PresentedFrame& info);
+    /// The GPU has finished the frame drawn to target `index` (the title's timeline has reached
+    /// `ready_tick`), and its image has been left in the General layout.
+    void EndFrame(u32 index, const PresentedFrame& info, u64 ready_tick = 0);
     /// The frame for target `index` will not be finished after all.
     void DropFrame(u32 index);
 

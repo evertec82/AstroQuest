@@ -49,7 +49,9 @@ over Virtual Desktop and fixed since. Expect rough edges, and please report what
   Other gamepads play too (Xbox, 8BitDo and the like): what they lack of a PS4 controller,
   the touchpad and the motion sensors, is made up for, see "Playing" below.
 - **ASTRO BOT Rescue Mission, European release CUSA12392, version 1.00 or 1.04** (the game
-  as on its disc, or with its last update), dumped from your own console and game: either as
+  as on its disc, or with its last update), or the American release CUSA12431 (one player
+  plays its 1.04 on the PC, #35; the fixes apply where its build is one of these two inside,
+  which the console window or core.log says), dumped from your own console and game: either as
   the game's folder (the one with `eboot.bin`, `sce_sys`, `sce_module` in it, about 13 GB) or
   as the `.pkg` package made from the dump, which the PC launcher unpacks by itself. (A
   package downloaded from the PlayStation Store is encrypted and cannot be used; a package
@@ -82,7 +84,8 @@ Download `AstroQuest-<version>-Quest3.apk` from the
    ```
 
    (or drag the APK onto SideQuest).
-2. **Copy the game to the headset**, the folder named `CUSA12392` (this takes a few minutes):
+2. **Copy the game to the headset**, the folder named `CUSA12392` (`CUSA12431` for the
+   American release; this takes a few minutes):
 
    ```sh
    adb push CUSA12392 /data/local/tmp/astro/games/

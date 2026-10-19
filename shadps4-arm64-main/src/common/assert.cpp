@@ -15,6 +15,9 @@
 
 void assert_fail_impl() {
     Common::Singleton<Core::Emulator>::Instance()->Shutdown();
+    // Shutdown flushes the log only the first time it runs: what failed has to reach the file
+    // even when something called it before.
+    Common::Log::Flush();
     Crash();
 }
 

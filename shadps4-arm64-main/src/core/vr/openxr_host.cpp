@@ -294,7 +294,9 @@ std::string ActiveAudioDeviceEnding(std::string_view ending, EDataFlow flow) {
 
 struct OpenXrHost::Impl {
     struct Slot {
-        enum class State { Free, Drawing, Ready, Reading };
+        // Copying: copied on a queue of the runtime's own, which may still be reading it until
+        // fences[copy_buffer] is signalled.
+        enum class State { Free, Drawing, Ready, Reading, Copying };
 
         vk::Image image;
         vk::DeviceMemory memory;
@@ -303,6 +305,8 @@ struct OpenXrHost::Impl {
         u32 height{};
         State state{State::Free};
         PresentedFrame info;
+        u64 ready_tick{};
+        u32 copy_buffer{};
     };
 
     struct Retired {
@@ -394,6 +398,21 @@ struct OpenXrHost::Impl {
     std::array<vk::CommandBuffer, NumCommandBuffers> command_buffers;
     std::array<vk::Fence, NumCommandBuffers> fences;
     u32 next_command_buffer{};
+    /// The command buffer of the last copy that was submitted, -1 if the last try submitted none.
+    s32 copied_with{-1};
+    /// What the runtime's queue is guarded by while the frame thread uses it: the renderer's
+    /// lock where the runtime shares the title's queue, else one of this host's own, so that a
+    /// runtime that holds on to a call (Virtual Desktop's xrEndFrame, for 100 ms at times: issues
+    /// #30, #33) does not hold up the title's work as well.
+    std::mutex own_queue_mutex;
+    std::mutex& QueueMutex() {
+        return OwnQueue() ? own_queue_mutex : Vulkan::Scheduler::submit_mutex;
+    }
+    bool OwnQueue() const {
+        return graphics.queue_index != 0;
+    }
+    /// xrEndFrame calls that took 50 ms or more since the last report.
+    u32 end_frame_held{};
 
     // The title's frames on their way here.
     std::mutex slot_mutex;
@@ -743,7 +762,18 @@ struct OpenXrHost::Impl {
                 Common::StoppableTimedWait(stop, std::chrono::milliseconds{1500});
                 continue;
             }
-            RunSession(stop);
+            // A runtime is to answer every call with a result, but one that lets an exception
+            // of its own out would end the program from this thread: the session is taken for
+            // lost instead, as when its calls fail.
+            try {
+                RunSession(stop);
+            } catch (const std::exception& exception) {
+                LOG_ERROR(Core_Vr, "The headset's runtime failed in a call: {}", exception.what());
+                session_lost = true;
+            } catch (...) {
+                LOG_ERROR(Core_Vr, "The headset's runtime failed in a call");
+                session_lost = true;
+            }
             DestroySession();
             if (session_lost) {
                 // A headset that went away comes back as a new one: it is asked for again,
@@ -826,7 +856,7 @@ struct OpenXrHost::Impl {
         {
             // Runtimes that draw with something else underneath set up what they share with
             // this device now, on its queue.
-            std::scoped_lock lock{Vulkan::Scheduler::submit_mutex};
+            std::scoped_lock lock{QueueMutex()};
             result = xrCreateSession(instance, &session_info, &session);
         }
         if (XR_FAILED(result)) {
@@ -882,7 +912,9 @@ struct OpenXrHost::Impl {
         have_frame = false;
         first_shown_logged = false;
         StartReport(state_since);
-        LOG_INFO(Core_Vr, "Session with the headset made");
+        LOG_INFO(Core_Vr, "Session with the headset made ({})",
+                 OwnQueue() ? "the runtime has a queue of its own"
+                            : "the runtime shares the title's queue");
         return true;
     }
 
@@ -1419,7 +1451,7 @@ struct OpenXrHost::Impl {
 
     void DestroySwapchain() {
         if (swapchain != XR_NULL_HANDLE) {
-            std::scoped_lock lock{Vulkan::Scheduler::submit_mutex};
+            std::scoped_lock lock{QueueMutex()};
             xrDestroySwapchain(swapchain);
             swapchain = XR_NULL_HANDLE;
         }
@@ -1485,7 +1517,7 @@ struct OpenXrHost::Impl {
             view_space = XR_NULL_HANDLE;
         }
         if (session != XR_NULL_HANDLE) {
-            std::scoped_lock lock{Vulkan::Scheduler::submit_mutex};
+            std::scoped_lock lock{QueueMutex()};
             xrDestroySession(session);
             session = XR_NULL_HANDLE;
         }
@@ -1745,7 +1777,7 @@ struct OpenXrHost::Impl {
 
             XrResult begun;
             {
-                std::scoped_lock lock{Vulkan::Scheduler::submit_mutex};
+                std::scoped_lock lock{QueueMutex()};
                 begun = xrBeginFrame(session, nullptr);
             }
             if (XR_FAILED(begun)) {
@@ -1761,6 +1793,7 @@ struct OpenXrHost::Impl {
             AskAudioDevicesIfDue();
             UpdatePad(pose_time);
 
+            FreeCopied();
             if (const s32 index = TakeFrame(); index >= 0) {
                 const auto started = Clock::now();
                 bool blank = false;
@@ -1782,7 +1815,12 @@ struct OpenXrHost::Impl {
                     first_shown_logged = false;
                 }
                 if (slot.state == Slot::State::Reading) {
-                    slot.state = Slot::State::Free;
+                    if (OwnQueue() && copied_with >= 0) {
+                        slot.state = Slot::State::Copying;
+                        slot.copy_buffer = static_cast<u32>(copied_with);
+                    } else {
+                        slot.state = Slot::State::Free;
+                    }
                 }
             }
 
@@ -1806,12 +1844,15 @@ struct OpenXrHost::Impl {
             const auto ending = Clock::now();
             XrResult ended;
             {
-                std::scoped_lock lock{Vulkan::Scheduler::submit_mutex};
+                std::scoped_lock lock{QueueMutex()};
                 ended = xrEndFrame(session, &end);
             }
             const double took = std::chrono::duration<double>(Clock::now() - ending).count();
             end_frame_time += took;
             end_frame_worst = std::max(end_frame_worst, took);
+            if (took >= 0.050) {
+                ++end_frame_held;
+            }
             if (layer_count != 0) {
                 // How far the head has turned from where the picture being shown was drawn
                 // for: what the compositor makes up for. Next to nothing while the head rests.
@@ -2085,6 +2126,19 @@ struct OpenXrHost::Impl {
 
     // --- pictures -----------------------------------------------------------------------------
 
+    /// Slots whose copy on the runtime's own queue is done are the title's to draw to again.
+    /// (Only this thread resets the fences: a fence that a later copy has taken over reads as
+    /// unsignalled until that one is done too, which is late, never early.)
+    void FreeCopied() {
+        std::scoped_lock lock{slot_mutex};
+        for (Slot& slot : slots) {
+            if (slot.state == Slot::State::Copying &&
+                graphics.device.getFenceStatus(fences[slot.copy_buffer]) == vk::Result::eSuccess) {
+                slot.state = Slot::State::Free;
+            }
+        }
+    }
+
     /// The newest finished frame that has not been shown yet, marked as being read; -1 for none.
     s32 TakeFrame() {
         // SHADPS4_XR_FREEZE_AFTER=<seconds>, for tests: from then on the picture that is being
@@ -2157,7 +2211,7 @@ struct OpenXrHost::Impl {
         {
             // Creating the images, and listing them, has some runtimes prepare them on the
             // queue.
-            std::scoped_lock lock{Vulkan::Scheduler::submit_mutex};
+            std::scoped_lock lock{QueueMutex()};
             result = xrCreateSwapchain(session, &info, &swapchain);
             if (XR_SUCCEEDED(result)) {
                 uint32_t image_count = 0;
@@ -2187,14 +2241,17 @@ struct OpenXrHost::Impl {
     /// Copies the frame in slot `index` into the image the compositor shows next. `blank` says
     /// that there was nothing to copy.
     bool CopyFrame(u32 index, bool& blank) {
+        copied_with = -1;
         vk::Image source;
         u32 width;
         u32 height;
+        u64 ready_tick;
         {
             std::scoped_lock lock{slot_mutex};
             source = slots[index].image;
             width = slots[index].width;
             height = slots[index].height;
+            ready_tick = slots[index].ready_tick;
         }
         // A title with nothing to show hands over a black picture of a pixel an eye (this one
         // does while it waits for the headset to be put back on). That is not worth images of
@@ -2211,7 +2268,7 @@ struct OpenXrHost::Impl {
         uint32_t image_index = 0;
         XrResult result;
         {
-            std::scoped_lock lock{Vulkan::Scheduler::submit_mutex};
+            std::scoped_lock lock{QueueMutex()};
             XrSwapchainImageAcquireInfo acquire{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
             result = xrAcquireSwapchainImage(swapchain, &acquire, &image_index);
         }
@@ -2341,13 +2398,29 @@ struct OpenXrHost::Impl {
 
         bool submitted;
         {
-            std::scoped_lock lock{Vulkan::Scheduler::submit_mutex};
+            std::scoped_lock lock{QueueMutex()};
+            // On a queue of its own the copy is not behind the title's work in line: it waits
+            // for the frame to be done on the title's timeline (which it is, the frame was only
+            // handed over then: this is what makes what it wrote visible here).
+            const bool wait = OwnQueue() && graphics.title_timeline && ready_tick != 0;
+            const vk::PipelineStageFlags wait_stage = vk::PipelineStageFlagBits::eAllCommands;
+            const vk::TimelineSemaphoreSubmitInfo timeline_info = {
+                .waitSemaphoreValueCount = 1,
+                .pWaitSemaphoreValues = &ready_tick,
+            };
             const vk::SubmitInfo submit_info = {
+                .pNext = wait ? &timeline_info : nullptr,
+                .waitSemaphoreCount = wait ? 1u : 0u,
+                .pWaitSemaphores = &graphics.title_timeline,
+                .pWaitDstStageMask = &wait_stage,
                 .commandBufferCount = 1,
                 .pCommandBuffers = &cmdbuf,
             };
             submitted =
                 graphics.queue.submit(submit_info, fences[buffer]) == vk::Result::eSuccess;
+            if (submitted) {
+                copied_with = static_cast<s32>(buffer);
+            }
             XrSwapchainImageReleaseInfo release{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
             result = xrReleaseSwapchainImage(swapchain, &release);
         }
@@ -2425,13 +2498,14 @@ struct OpenXrHost::Impl {
                  "Headset: the title delivered {:.1f} frames a second ({:.0f} ms the longest "
                  "wait for one, {} waits of more than 50 ms), {:.1f} were shown, the "
                  "headset took {:.1f} pictures a second ({}); handing one over took {:.2f} ms, "
-                 "ending a picture {:.2f} ms ({:.1f} at worst); head tracked {:.0f}% of the "
+                 "ending a picture {:.2f} ms ({:.1f} at worst, {} of 50 ms or more); head "
+                 "tracked {:.0f}% of the "
                  "time, at {:.2f} {:.2f} {:.2f} facing {:.0f} degrees left; pictures were shown "
                  "{:.1f} degrees from where they were drawn for ({:.1f} at most)",
                  static_cast<float>(delivered - reported_delivered) / seconds, gap * 1e3, gaps,
                  static_cast<float>(copied_frames) / seconds, frames / seconds, StateName(state),
                  copied_frames != 0 ? copy_time / copied_frames * 1e3 : 0.0,
-                 end_frame_time / frames * 1e3, end_frame_worst * 1e3,
+                 end_frame_time / frames * 1e3, end_frame_worst * 1e3, end_frame_held,
                  100.0f * static_cast<float>(head_tracked_frames) / frames,
                  head_pose.position.x, head_pose.position.y, head_pose.position.z,
                  std::atan2(-forward.x, -forward.z) * 57.29578f,
@@ -2506,6 +2580,7 @@ struct OpenXrHost::Impl {
         controller_samples = 0;
         end_frame_time = 0.0;
         end_frame_worst = 0.0;
+        end_frame_held = 0;
         copy_time = 0.0;
         correction = 0.0f;
         correction_worst = 0.0f;
@@ -2785,7 +2860,7 @@ std::optional<OpenXrHost::Target> OpenXrHost::BeginFrame(u32 width, u32 height) 
     return std::nullopt;
 }
 
-void OpenXrHost::EndFrame(u32 index, const PresentedFrame& info) {
+void OpenXrHost::EndFrame(u32 index, const PresentedFrame& info, u64 ready_tick) {
     std::scoped_lock lock{impl->slot_mutex};
     Impl::Slot& slot = impl->slots[index % NumSlots];
     if (slot.state != Impl::Slot::State::Drawing) {
@@ -2793,6 +2868,7 @@ void OpenXrHost::EndFrame(u32 index, const PresentedFrame& info) {
     }
     slot.state = Impl::Slot::State::Ready;
     slot.info = info;
+    slot.ready_tick = ready_tick;
     impl->latest = static_cast<s32>(index % NumSlots);
     impl->delivered_frames.fetch_add(1, std::memory_order_relaxed);
     const auto now = Clock::now();
