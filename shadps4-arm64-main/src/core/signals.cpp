@@ -1,12 +1,17 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
+#include <atomic>
 #include <cstring>
+#include <exception>
+#include <string>
 #include "common/arch.h"
 #include "common/assert.h"
 #include "common/crash_reporter.h"
 #include "common/decoder.h"
 #include "common/signal_context.h"
+#include "common/types.h"
 #include "core/libraries/kernel/threads/exception.h"
 #include "core/signals.h"
 #ifdef SHADPS4_ENABLE_FEX_GUEST_CPU
@@ -37,6 +42,92 @@ namespace Core {
 
 #if defined(_WIN32)
 
+/// Each caller up the stack as its module and the place in it.
+static void LogCallers(bool critical) {
+    void* frames[32];
+    const USHORT count = CaptureStackBackTrace(1, 32, frames, nullptr);
+    for (USHORT i = 0; i < count; ++i) {
+        HMODULE module = nullptr;
+        char name[MAX_PATH] = "?";
+        if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                   GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                               static_cast<LPCSTR>(frames[i]), &module)) {
+            GetModuleFileNameA(module, name, sizeof(name));
+        }
+        const char* file = std::strrchr(name, '\\');
+        const auto offset =
+            reinterpret_cast<uintptr_t>(frames[i]) - reinterpret_cast<uintptr_t>(module);
+        if (critical) {
+            LOG_CRITICAL(Debug, "  {} + {:#x}", file ? file + 1 : name, offset);
+        } else {
+            LOG_WARNING(Debug, "  {} + {:#x}", file ? file + 1 : name, offset);
+        }
+    }
+}
+
+/// The file name of the module at `base`, or of the one that holds `address`.
+static std::string ModuleName(const void* base, const void* address = nullptr) {
+    HMODULE module = static_cast<HMODULE>(const_cast<void*>(base));
+    if (module == nullptr &&
+        !GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            static_cast<LPCSTR>(address), &module)) {
+        return "?";
+    }
+    char name[MAX_PATH] = "?";
+    GetModuleFileNameA(module, name, sizeof(name));
+    const char* file = std::strrchr(name, '\\');
+    return file ? file + 1 : name;
+}
+
+// A C++ exception as Microsoft's compilers (and clang for Windows) throw it. Its record holds
+// the object thrown, a description of the types it can be caught as, and the module those
+// descriptions are offsets into.
+static constexpr DWORD MSVC_CPP_EXCEPTION = 0xE06D7363;
+struct CppThrowInfo {
+    u32 attributes;
+    s32 unwind;
+    s32 forward_compat;
+    s32 catchable_types;
+};
+struct CppCatchableType {
+    u32 properties;
+    s32 type;
+    s32 member_displacement;
+    s32 vbtable_displacement;
+    s32 vbtable_index;
+    s32 size;
+    s32 copy;
+};
+
+/// What a thrown std::exception says, or nothing for anything else.
+static std::string CppExceptionText(const EXCEPTION_RECORD& record) {
+    const ULONG_PTR magic = record.NumberParameters >= 4 ? record.ExceptionInformation[0] : 0;
+    if (magic < 0x19930520 || magic > 0x19930522 || record.ExceptionInformation[1] == 0 ||
+        record.ExceptionInformation[2] == 0 || record.ExceptionInformation[3] == 0) {
+        return {};
+    }
+    const auto object = record.ExceptionInformation[1];
+    const auto image = record.ExceptionInformation[3];
+    const auto* info = reinterpret_cast<const CppThrowInfo*>(record.ExceptionInformation[2]);
+    if (info->catchable_types == 0) {
+        return {};
+    }
+    const auto* types = reinterpret_cast<const s32*>(image + info->catchable_types);
+    for (s32 i = 0; i < std::min(types[0], 16); ++i) {
+        const auto* type = reinterpret_cast<const CppCatchableType*>(image + types[1 + i]);
+        // A type descriptor: its table pointer, a spare pointer, then the decorated name.
+        const char* name = reinterpret_cast<const char*>(image + type->type + 16);
+        if (type->type != 0 && type->vbtable_displacement < 0 &&
+            std::strcmp(name, ".?AVexception@std@@") == 0) {
+            const auto* exception =
+                reinterpret_cast<const std::exception*>(object + type->member_displacement);
+            return exception->what();
+        }
+    }
+    return {};
+}
+
 static LONG WINAPI SignalHandler(EXCEPTION_POINTERS* pExp) noexcept {
     const auto* signals = Signals::Instance();
     DWORD code = 0;
@@ -63,6 +154,27 @@ static LONG WINAPI SignalHandler(EXCEPTION_POINTERS* pExp) noexcept {
     case MS_VC_EXCEPTION:
         LOG_DEBUG(Debug, "Pass MS_VC_EXCEPTION at {} to handler", address);
         return EXCEPTION_EXECUTE_HANDLER;
+    case MSVC_CPP_EXCEPTION: {
+        // Seen here before anyone has had the chance to catch it, and most are caught: Virtual
+        // Desktop's OpenXR runtime throws and catches its own while sessions come and go. It is
+        // said, in case nobody does catch it, but it is no reason to stop.
+        static std::atomic<u32> thrown{0};
+        const u32 count = ++thrown;
+        if (count <= 4 || count % 100 == 0) {
+            const auto* record = pExp->ExceptionRecord;
+            const std::string text = CppExceptionText(*record);
+            LOG_WARNING(Debug, "A C++ exception was thrown in {} ({} so far){}{}",
+                        ModuleName(record->NumberParameters >= 4
+                                       ? reinterpret_cast<void*>(record->ExceptionInformation[3])
+                                       : nullptr,
+                                   address),
+                        count, text.empty() ? "" : ": ", text);
+            if (count <= 4) {
+                LogCallers(false);
+            }
+        }
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
     default:
         break;
     }
@@ -71,26 +183,19 @@ static LONG WINAPI SignalHandler(EXCEPTION_POINTERS* pExp) noexcept {
         return EXCEPTION_CONTINUE_EXECUTION;
     }
 
-    // Breakpoints almost certainly come from our asserts/unreachables, no need to log it again.
-    if (code != EXCEPTION_BREAKPOINT) {
-        LOG_CRITICAL(Debug, "Unhandled Exception code {:#x} at {}", code, address);
-        // Where it came from: each caller as its module and the place in it.
-        void* frames[32];
-        const USHORT count = CaptureStackBackTrace(0, 32, frames, nullptr);
-        for (USHORT i = 0; i < count; ++i) {
-            HMODULE module = nullptr;
-            char name[MAX_PATH] = "?";
-            if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
-                                       GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                                   static_cast<LPCSTR>(frames[i]), &module)) {
-                GetModuleFileNameA(module, name, sizeof(name));
-            }
-            const char* file = std::strrchr(name, '\\');
-            LOG_CRITICAL(Debug, "  {} + {:#x}", file ? file + 1 : name,
-                         reinterpret_cast<uintptr_t>(frames[i]) -
-                             reinterpret_cast<uintptr_t>(module));
+    if (code == EXCEPTION_BREAKPOINT) {
+        // The emulator's own come from its asserts, which have said what failed already. One
+        // anywhere else stops the program just as well, and without a word.
+        if (ModuleName(nullptr, address) != ModuleName(GetModuleHandleA(nullptr))) {
+            LOG_CRITICAL(Debug, "A breakpoint was hit in {}", ModuleName(nullptr, address));
+            LogCallers(true);
         }
+        Common::Log::Flush();
+    } else {
+        LOG_CRITICAL(Debug, "Unhandled Exception code {:#x} at {}", code, address);
+        LogCallers(true);
         Common::Singleton<Core::Emulator>::Instance()->Shutdown();
+        Common::Log::Flush();
     }
 
     return EXCEPTION_CONTINUE_SEARCH;

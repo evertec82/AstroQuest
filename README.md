@@ -1,4 +1,5 @@
-> **Enhanced fork release v0.8.6:** adds the game 1.04 soccer-enemy timing fix and incorporates upstream 0.21 and 0.21.1 while retaining our performance, transparency and crash-reporting changes. Windows users: [PC instructions](README-PC-VR.md). Standalone Quest users: [enhanced build instructions](README-QUEST-ENHANCED.md), including resolution and frame-pacing options. The upstream documentation follows below; its default 30 FPS setting differs from this fork's selectable full-framerate default.
+> **Enhanced fork v0.8.7:** merges upstream v0.22 with our transparency, pacing, resolution and crash-reporting changes. Downloads include PC VR, Quest, PICO and Galaxy XR. Standalone startup settings now include a 45 FPS cap.
+
 
 # AstroQuest
 
@@ -13,7 +14,7 @@ from your own copy of the game through a PS4 emulator. Ways to play:
 
 - **On the headset alone**: an app for the Quest 3 runs the emulator on the headset itself. No
   PC is needed once it is installed. Please note: while the standalone Meta Quest 3 build is
-  fully functional and playable, the headset’s mobile GPU is pushed to its limits. As a result,
+  fully functional and playable, the headsetâ€™s mobile GPU is pushed to its limits. As a result,
   native standalone visuals run at lower resolutions and visual fidelity compared to the original
   PS4 hardware or the PC VR mode.
 - **On a Windows PC, shown in the Quest through Virtual Desktop**: the PC runs the game at the
@@ -57,7 +58,9 @@ over Virtual Desktop and fixed since. Expect rough edges, and please report what
   Other gamepads play too (Xbox, 8BitDo and the like): what they lack of a PS4 controller,
   the touchpad and the motion sensors, is made up for, see "Playing" below.
 - **ASTRO BOT Rescue Mission, European release CUSA12392, version 1.00 or 1.04** (the game
-  as on its disc, or with its last update), dumped from your own console and game: either as
+  as on its disc, or with its last update), or the American release CUSA12431 (one player
+  plays its 1.04 on the PC, #35; the fixes apply where its build is one of these two inside,
+  which the console window or core.log says), dumped from your own console and game: either as
   the game's folder (the one with `eboot.bin`, `sce_sys`, `sce_module` in it, about 13 GB) or
   as the `.pkg` package made from the dump, which the PC launcher unpacks by itself. (A
   package downloaded from the PlayStation Store is encrypted and cannot be used; a package
@@ -86,11 +89,12 @@ Download `AstroQuest-<version>-Quest3.apk` from the
    debugging in the headset, and run
 
    ```sh
-   adb install -r AstroQuest-0.21.1-Quest3.apk
+   adb install -r AstroQuest-0.22-Quest3.apk
    ```
 
    (or drag the APK onto SideQuest).
-2. **Copy the game to the headset**, the folder named `CUSA12392` (this takes a few minutes):
+2. **Copy the game to the headset**, the folder named `CUSA12392` (`CUSA12431` for the
+   American release; this takes a few minutes):
 
    ```sh
    adb push CUSA12392 /data/local/tmp/astro/games/
@@ -131,14 +135,14 @@ Playing:
 
 - The app begins with a menu: the field of view, the detail further away, foveated
   rendering, how the picture is enlarged (FSR 1 or the game's own way) and the display's
-  refresh rate. Up and down go from line to line, a stick to a side chooses, ✕ / A or a
+  refresh rate. Up and down go from line to line, a stick to a side chooses, âœ• / A or a
   trigger starts the game. The defaults are the ones to start with.
 - **With a gamepad**: put the Touch controllers aside and hold it. The headset tracks your
   hands around it, and that is where the controller is in the game. A gamepad without motion
   sensors, which is every one that is not a PlayStation's, is turned and tilted in the game
   by your hands, as far as the headset sees them.
 - **With the Touch controllers**: the right one is the controller in the game, where it is
-  and the way it points. Left stick to move; A is ✕, B is □, X is ○, Y is △; the left
+  and the way it points. Left stick to move; A is âœ•, B is â–¡, X is â—‹, Y is â–³; the left
   controller's menu button is OPTIONS. X and Y together blow, where the game wants you to
   blow into the microphone.
 - **The touchpad, on the Touch controllers and on a gamepad that has none**, is on buttons
@@ -156,7 +160,7 @@ Playing:
 - **The game speaks the headset's language**, of those it has (28; English otherwise).
 - The first screen asks to move the controller into a floating outline: hold it up in front
   of you where the outline is.
-- On the world map, **look** at a planet and press ✕.
+- On the world map, **look** at a planet and press âœ•.
 - **Reset the view** by holding OPTIONS for a second (or pressing the PS button; with the
   Touch controllers, hold the left menu button for a second or press both sticks in)
   whenever you sit differently and things are too close, too far or off to one side.

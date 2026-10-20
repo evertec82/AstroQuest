@@ -50,55 +50,14 @@ static std::vector<u8> MadeUp(const Build& build) {
     for (const Change& change : PhysicsStepChanges(build)) {
         std::memcpy(image.data() + change.at, &change.was, change.bytes);
     }
-    for (const Change& change : SoccerTimingChanges(build)) {
+    for (const Change& change : FrameCountChanges(build)) {
         std::memcpy(image.data() + change.at, &change.was, change.bytes);
+        // And the constant they are to read.
+        s32 distance = 0;
+        std::memcpy(&distance, reinterpret_cast<const u8*>(&change.now) + 4, sizeof(distance));
+        Put(image, change.at + 8 + distance, ConsoleFrameSeconds);
     }
     return image;
-}
-
-static void CheckSoccerTiming(const Build& build, std::vector<u8> image,
-                              const std::string& name) {
-    const auto changes = SoccerTimingChanges(build);
-    if (build.soccer_nominal_seconds == 0) {
-        Check(changes.empty(), name + ": no guessed soccer patch for an unverified build");
-        return;
-    }
-    const auto original = image;
-    Check(Apply(image, changes) == nullptr, name + ": guarded soccer timing patch applied");
-    bool correct_targets = true;
-    for (const u64 at : build.soccer_budget_reads) {
-        u32 opcode = 0;
-        s32 relative = 0;
-        std::memcpy(&opcode, image.data() + at, sizeof(opcode));
-        std::memcpy(&relative, image.data() + at + 4, sizeof(relative));
-        correct_targets &= opcode == 0x0510fac5 && at + 8 + relative == build.soccer_nominal_seconds;
-    }
-    Check(Apply(image, changes) != nullptr, name + ": patch cannot be applied twice");
-    Check(correct_targets, name + ": both budget reads load the immutable console frame unit");
-    auto restored = image;
-    for (const Change& change : changes) {
-        std::memcpy(restored.data() + change.at, &change.was, change.bytes);
-    }
-    Check(restored == original, name + ": elapsed-time integration and assertion code unchanged");
-    float unit = 0;
-    std::memcpy(&unit, image.data() + build.soccer_nominal_seconds, sizeof(unit));
-    for (const double fps : {60., 72., 80., 90., 120., 144.}) {
-        const double budget = 30 * unit;
-        Check(budget >= 0.49 && budget < 0.6,
-              name + ": valid clip fits and oversized clip still fails at " + std::to_string(fps));
-        if (fps > 60) {
-            Check(30 / fps < 0.49, name + ": former variable-frame budget reproduces mismatch");
-        }
-    }
-    for (const Change& change : changes) {
-        auto odd = original;
-        odd[change.at] ^= 1;
-        const auto before = odd;
-        Check(Apply(odd, changes) != nullptr && odd == before,
-              name + ": unexpected bytes refuse the entire soccer patch");
-    }
-    auto truncated = std::span<u8>{image}.first(build.soccer_budget_reads.back() + 4);
-    Check(Apply(truncated, changes) != nullptr, name + ": truncated soccer code refused");
 }
 
 /// Where the call in a run of code leads: the first E8 of `code`, which starts at `at`.
@@ -111,6 +70,45 @@ static u64 CallTarget(std::span<const u8> code, u64 at) {
         }
     }
     return 0;
+}
+
+/// The soccer robots' frame counts: every place reads the same stack slot as a VEX instruction
+/// of eight bytes, and is to read, with the same instruction, a constant 8 bytes on that holds
+/// 1/60 as a float (where the image has it: made-up images hold nothing there).
+static void CheckFrameCounts(const Build& build, std::vector<u8> image, const std::string& name) {
+    const auto changes = FrameCountChanges(build);
+    Check(changes.size() == 6, name + ": the soccer robots' frame counts in 6 places");
+    bool same_slot = true;
+    bool same_instruction = true;
+    bool one_constant = true;
+    bool constant_holds = true;
+    u64 constant = 0;
+    for (const Change& change : changes) {
+        u8 was[8];
+        u8 now[8];
+        std::memcpy(was, &change.was, 8);
+        std::memcpy(now, &change.now, 8);
+        same_slot &= change.bytes == 8 && was[0] == 0xc5 && (was[3] & 0xc7) == 0x85 &&
+                     (change.was >> 32) == (changes[0].was >> 32);
+        same_instruction &= std::memcmp(was, now, 3) == 0 && (now[3] & 0xc7) == 0x05 &&
+                            (now[3] & 0x38) == (was[3] & 0x38);
+        s32 distance = 0;
+        std::memcpy(&distance, now + 4, sizeof(distance));
+        const u64 at = change.at + 8 + distance;
+        one_constant &= constant == 0 || constant == at;
+        constant = at;
+        if (at + 4 <= image.size()) {
+            float value = 0.0f;
+            std::memcpy(&value, image.data() + at, sizeof(value));
+            constant_holds &= value == ConsoleFrameSeconds;
+        }
+    }
+    Check(same_slot, name + ": each reads the step from the same place on the stack");
+    Check(same_instruction, name + ": each is to be the same instruction from rip+...");
+    Check(one_constant, name + ": all of them read one constant");
+    Check(constant_holds, name + ": which holds 1/60 where the image has it");
+    Check(Apply(image, changes) == nullptr && Recognise(image) == &build,
+          name + ": written whole, and still recognised");
 }
 
 /// The physics step of a build, changed: written once and whole, into one run of bytes that
@@ -267,7 +265,7 @@ int main(int argc, char** argv) {
         Check(Apply(image, beyond) == &beyond[0], name + ": nothing written beyond the image");
 
         CheckPhysicsStep(build, image, name);
-        CheckSoccerTiming(build, image, name);
+        CheckFrameCounts(build, image, name);
         // What the game is told apart by does not depend on it.
         std::vector<u8> stepped = image;
         Check(Apply(stepped, PhysicsStepChanges(build)) == nullptr &&
@@ -295,7 +293,7 @@ int main(int argc, char** argv) {
             Check(Apply(larger, SizeChanges(*build, Doubled())) == nullptr,
                   std::string{"larger sizes written into "} + argv[i]);
             CheckPhysicsStep(*build, image, argv[i]);
-            CheckSoccerTiming(*build, image, argv[i]);
+            CheckFrameCounts(*build, image, argv[i]);
         }
     }
 

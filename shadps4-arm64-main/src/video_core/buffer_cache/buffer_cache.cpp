@@ -1242,7 +1242,11 @@ void BufferCache::RunGarbageCollector() {
         ++gc_tick;
     };
     if (instance.CanReportMemoryUsage()) {
-        total_used_memory = instance.GetDeviceMemoryUsage();
+        u64 budget = 0;
+        total_used_memory = instance.GetDeviceMemoryUsage(&budget);
+        if (!instance.IsIntegrated()) {
+            Vulkan::FrameStats::NoteVideoMemory(total_used_memory, budget);
+        }
     }
     if (total_used_memory < trigger_gc_memory) {
         return;

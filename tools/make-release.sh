@@ -64,8 +64,8 @@ EOF
 
 cat > "$pc/games/PUT YOUR GAME HERE.txt" <<'EOF'
 Put your own copy of ASTRO BOT Rescue Mission (European release CUSA12392, version 1.00 or
-1.04) in this folder, then start "Play Astro Bot VR.bat". Either form will do, anywhere in
-here:
+1.04, or the American release CUSA12431) in this folder, then start "Play Astro Bot VR.bat".
+Either form will do, anywhere in here:
 
 - the game's folder, the one with eboot.bin in it, or
 - the game's .pkg file: it is unpacked the first time, which takes a minute and about 13 GB.

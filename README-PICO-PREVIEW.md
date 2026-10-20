@@ -1,12 +1,12 @@
 # AstroQuest PICO standalone preview
 
-**Experimental PICO preview updated to the Quest v0.8.6 core and upstream 0.21.1.**
+**Experimental PICO preview updated to the Quest v0.8.7 core and upstream 0.21.1.**
 
 Experimental standalone Android/OpenXR build of Astro Bot, based on the enhanced Quest ARM64 core. The app is named **AstroQuest PICO (preview)**, package `com.astrobotquest.vrhost.evertec82.pico`. It keeps separate saves and settings from the Quest app.
 
 ## Install and game files
 
-Install `AstroQuest-PICO-0.8.6-preview.apk` using ADB or your headset's sideloading tools. Enable USB debugging and authorize your computer first.
+Install `AstroQuest-PICO-0.8.7-preview.apk` using ADB or your headset's sideloading tools. Enable USB debugging and authorize your computer first.
 
 Supply your own extracted game folder, including all files, at `/data/local/tmp/astro/games/CUSA12392/eboot.bin`. Create `/data/local/tmp/astro/games` before running `adb push CUSA12392 /data/local/tmp/astro/games/`. Alternatively, after first launch use `/sdcard/Android/data/com.astrobotquest.vrhost.evertec82.pico/files/games/CUSA12392/`. Game files and firmware are not included in the APK.
 
@@ -24,6 +24,9 @@ Settings and current/previous host/core logs are in `/sdcard/Android/data/com.as
 
 Local validation status is recorded separately from this distributable document. No unpublished device specifications are included here. This is a preview, not a generally validated PICO release.
 
-## Startup display settings (0.8.6)
+## Startup display settings (0.8.7)
 
 Use Up/Down to choose FOV or resolution, Left/Right to adjust, and A/X or a trigger to play. Both choices are saved. Resolution includes Auto, Game controlled, and fixed per-eye sizes of 816 x 870, 960 x 1080, 1200 x 1280, 1440 x 1536, 1680 x 1792, 1920 x 2048, and 2160 x 2304. Auto reaches 2160 x 2304 while retaining its original lower-resolution fallbacks. The maximum has 2.25 times the former pixel count, which may reduce performance. Includes the upstream black-square fix, shader and cache optimizations, distant detail/foveation/FSR 1/refresh controls, full-framerate or steady-30 pacing, and the game 1.04 soccer timing correction.
+
+## v0.8.7
+Includes upstream v0.22 core fixes and the selectable 45 FPS cap alongside full framerate and steady 30 FPS. A 45 FPS cap aligns to display refresh: 45 at 90 Hz, 36 at 72 Hz, or 40 at 120 Hz. Existing FOV, resolution and platform settings are retained.

@@ -280,6 +280,8 @@ std::atomic<u64> g_gpu_busy_clocks{};
 std::atomic<u32> g_gpu_fastest_clock{};
 std::atomic<u64> g_gpu_thread_ns{};
 std::atomic<u32> g_gpu_thread_frames{};
+std::atomic<u64> g_video_memory_used{};
+std::atomic<u64> g_video_memory_budget{};
 /// The same looks for the frame statistics' lines: all of them, the busy ones, and the clocks
 /// of each (MHz, where known) added up.
 std::atomic<u64> g_log_looks{};
@@ -413,6 +415,16 @@ double FrameStats::TakeGpuThreadTime() {
     const u64 ns = g_gpu_thread_ns.exchange(0, std::memory_order_relaxed);
     const u32 frames = g_gpu_thread_frames.exchange(0, std::memory_order_relaxed);
     return frames != 0 ? static_cast<double>(ns) / frames / 1e9 : 0.0;
+}
+
+void FrameStats::NoteVideoMemory(u64 used, u64 budget) {
+    g_video_memory_used.store(used, std::memory_order_relaxed);
+    g_video_memory_budget.store(budget, std::memory_order_relaxed);
+}
+
+FrameStats::VideoMemoryUse FrameStats::VideoMemory() {
+    return {g_video_memory_used.load(std::memory_order_relaxed),
+            g_video_memory_budget.load(std::memory_order_relaxed)};
 }
 
 float FrameStats::TakeGpuLoad() {

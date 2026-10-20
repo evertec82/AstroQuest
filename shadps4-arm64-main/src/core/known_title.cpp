@@ -42,6 +42,15 @@ using Clock = std::chrono::steady_clock;
 // inside, and how a build is told from the others, is in known_title_builds.h; what follows is
 // the same in all of them.
 using Builds::Build;
+
+/// Whether the title is Astro Bot Rescue Mission in a release whose builds may be among those
+/// known: the European one (CUSA12392), or the American one (CUSA12431, issue #35). Which build
+/// it is, if any known, is told from inside it all the same, whatever its release.
+bool IsThisTitle() {
+    const std::string_view serial = Common::ElfInfo::Instance().GameSerial();
+    return serial == "CUSA12392" || serial == "CUSA12431";
+}
+
 using Builds::ConsoleSizes;
 using Builds::FirstHeadsetLevel;
 using Builds::LastHeadsetLevel;
@@ -743,8 +752,9 @@ private:
         faster_windows = 0;
         // A larger picture, when it would have fitted the pace with a fifth to spare for a few
         // seconds in a row (a view that is lighter for a moment is no reason), up to the
-        // largest allowed.
-        if (sized && level < largest && cost_at(level + 1) * (1.0 + SizeUpMargin) <= slot) {
+        // largest allowed, and while the graphics card's memory has room for it.
+        if (sized && level < largest && cost_at(level + 1) * (1.0 + SizeUpMargin) <= slot &&
+            VideoMemoryRoom(now)) {
             ++up_windows;
         } else {
             up_windows = 0;
@@ -755,6 +765,26 @@ private:
             went_up = now;
             up_windows = 0;
         }
+    }
+
+    /// Whether a graphics card's own memory has room for a larger picture. Where it is nearly
+    /// full, what does not fit is kept in the system's memory and read over the bus, and every
+    /// frame takes many times as long, at that size and for a long while after it (an 8 GB card
+    /// tried at 2160x2304 an eye: issue #37). Always where the memory is the system's own (the
+    /// headset) or cannot be read.
+    bool VideoMemoryRoom(Clock::time_point now) {
+        const auto [used, budget] = Vulkan::FrameStats::VideoMemory();
+        if (budget == 0 || static_cast<double>(used) < static_cast<double>(budget) * FullMemory) {
+            return true;
+        }
+        if (now - memory_said > std::chrono::minutes{1}) {
+            memory_said = now;
+            LOG_INFO(Core,
+                     "No larger picture than {} an eye: the graphics card's memory is "
+                     "{:.1f} of the {:.1f} GB it may have in use",
+                     SizeName(level), used / 1e9, budget / 1e9);
+        }
+        return false;
     }
 
     /// Whether the title's own work may fit `to` refreshes: no try at that pace failed for it,
@@ -849,6 +879,8 @@ private:
 
     /// The console's smallest size in most levels.
     static constexpr s32 UsualLevel = 4;
+    /// The share of a graphics card's memory in use beyond which the picture does not grow.
+    static constexpr double FullMemory = 0.8;
     /// Frames are never held to a pace slower than this (in seconds a frame): a title that
     /// cannot make it either is left to draw as fast as it can.
     static constexpr double SlowestWanted = 0.0345;
@@ -934,6 +966,8 @@ private:
         u32 clock{};
     };
     std::optional<Step> watched;
+    /// When the log last said that the graphics card's memory kept the picture from growing.
+    Clock::time_point memory_said{};
     // The GPU's work a frame at the present size and pace, averaged over the windows since it
     // was taken (level_windows of them), for what a step from it teaches.
     double level_average{};
@@ -1318,11 +1352,12 @@ void OnFrameSubmitted() {
         const double stepped =
             settings.time_step ? time_step.TakeStepped() : Nominal * report_frames;
         const Governor::Summary summary = governor.TakeSummary();
+        const auto memory = Vulkan::FrameStats::VideoMemory();
         LOG_INFO(Core,
                  "The title's clock: frames take {:.1f} ms, its time step is {:.1f} ms, the game "
                  "ran at {:.0f}% of its speed over the last {:.0f} s (it would have at {:.0f}% "
                  "left to itself); it draws the scene at {} an eye and is given {} refreshes a "
-                 "frame ({:.1f} ms), the GPU busy {:.0f}% of the time{}",
+                 "frame ({:.1f} ms), the GPU busy {:.0f}% of the time{}{}",
                  report_real / report_frames * 1e3, step * 1e3, 100.0 * stepped / report_real,
                  report_real, 100.0 * Nominal * report_frames / report_real,
                  SizeName(resolution),
@@ -1330,6 +1365,10 @@ void OnFrameSubmitted() {
                  summary.next_cost > 0.0
                      ? fmt::format(" (the next size up counted as {:.2f} times the work)",
                                    summary.next_cost)
+                     : std::string{},
+                 memory.budget != 0
+                     ? fmt::format(", its memory {:.1f} of {:.1f} GB in use", memory.used / 1e9,
+                                   memory.budget / 1e9)
                      : std::string{});
         if (const std::string seen = physics_watch.TakeSummary(); !seen.empty()) {
             LOG_INFO(Core, "{}", seen);
@@ -1353,7 +1392,7 @@ u32 FramePace() {
 }
 
 void Prepare() {
-    if (Common::ElfInfo::Instance().GameSerial() != "CUSA12392") {
+    if (!IsThisTitle()) {
         return;
     }
     const Larger& larger = GetLarger();
@@ -1368,7 +1407,7 @@ void Prepare() {
 }
 
 void OnGameLoaded(VAddr base, u64 size) {
-    if (Common::ElfInfo::Instance().GameSerial() != "CUSA12392") {
+    if (!IsThisTitle()) {
         return;
     }
     // Asked here and nowhere else: this is the one moment at which the image is as its build
@@ -1377,13 +1416,15 @@ void OnGameLoaded(VAddr base, u64 size) {
     const Build* const build = Builds::Recognise(image);
     if (build == nullptr) {
         LOG_WARNING(Core,
-                    "This build of CUSA12392 is none of those known from inside (its versions "
-                    "1.00 and 1.04 are): it is left to itself. It then counts time in frames, "
-                    "which is slow motion wherever a frame takes longer than a sixtieth of a "
-                    "second, and draws at the console's sizes");
+                    "This build of {} is none of those known from inside (the versions 1.00 "
+                    "and 1.04 of CUSA12392 are): it is left to itself. It then counts time in "
+                    "frames, which is slow motion wherever a frame takes longer than a sixtieth "
+                    "of a second, and draws at the console's sizes",
+                    Common::ElfInfo::Instance().GameSerial());
         return;
     }
-    LOG_INFO(Core, "CUSA12392 in a build known from inside: {}", build->name);
+    LOG_INFO(Core, "{} in a build known from inside: {}", Common::ElfInfo::Instance().GameSerial(),
+             build->name);
 
     const Larger& larger = GetLarger();
     if (larger.factor != 1.0) {
@@ -1420,18 +1461,18 @@ void OnGameLoaded(VAddr base, u64 size) {
         }
     }
     if (GetSettings().time_step) {
-        const char* value = std::getenv("SHADPS4_TITLE_SOCCER_TIMING");
-        if (value == nullptr || std::atoi(value) != 0) {
-            const auto changes = Builds::SoccerTimingChanges(*build);
-            if (changes.empty()) {
-                LOG_WARNING(Core, "Soccer animation timing fix is not verified for {}", build->name);
-            } else if (const auto* unexpected = Builds::Apply(image, changes)) {
-                LOG_WARNING(Core, "Soccer animation timing fix refused: unexpected bytes at {:#x}",
-                            unexpected->at);
-            } else {
-                LOG_INFO(Core, "Soccer animation budgets use console 60-FPS units; rendering "
-                               "and elapsed-time integration remain variable-rate");
-            }
+        // Where the step is not the console's, what the title counts in frames is to be its
+        // frames still.
+        const auto changes = Builds::FrameCountChanges(*build);
+        if (const Builds::Change* unexpected = Builds::Apply(image, changes);
+            unexpected != nullptr) {
+            LOG_WARNING(Core,
+                        "The title does not have {:#x} at {:#x} as expected: its soccer robots "
+                        "count their frames with the time step, and may stop the game where "
+                        "frames are shorter than a sixtieth of a second",
+                        unexpected->was, unexpected->at);
+        } else {
+            LOG_INFO(Core, "The title's soccer robots count their frames as the console's");
         }
     }
     known_base = base;

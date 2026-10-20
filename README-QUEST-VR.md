@@ -372,6 +372,17 @@ second time (or the entry, handed to a new image meanwhile, was in the list twic
 one heap corruption seen under quick changes of size on 2026-10-09). Only images in the cache
 count as used now, and the cache never lets go of an image twice. The same in the PC's build.
 
+**App 0.22 (2026-10-19): the soccer robots keep the console's time, and the American
+release.** The soccer robots (end of 2-2, and two later levels) count how long they stay in
+each state in frames,
+which the game turned into seconds with the length of the current frame: at the headset's 30
+frames a second they waited twice as long as on the console, and on a PC above 60 frames a
+second the game stopped there (issue #23). They count the console's 1/60 s frames now. The
+American release (CUSA12431, issue #35) gets the same fixes as the European one wherever its
+build is one the emulator knows from inside (`core.log`: "CUSA12431 in a build known from
+inside"). And the last lines before a crash reach `core.log`: they waited in the log's queue
+and were lost when the emulator stopped.
+
 **App 0.8 (2026-10-03)**, after the fourth session (levels 1-1 to 1-3 played, the game stopped
 on entering 1-4 twice):
 

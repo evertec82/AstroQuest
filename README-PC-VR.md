@@ -253,6 +253,11 @@ controller there: PS + △ brings it to yours afterwards. The PS button pressed 
 itself still resets the view. With tracked hands, the hands say where the gamepad is as
 long as they are seen; your own place counts while they are not.
 
+Steam, while it runs, takes some PS button chords for itself, PS + △ among them, even for a
+game whose Steam Input is off: the controller then seems to disconnect until the game is
+started again (#34). In Steam's Settings > Controller, "Show Advanced Settings", turn off
+**Guide Button Focuses Steam** and **Enable Guide Button Chords for Controllers**.
+
 ### With the headset's own controllers
 
 The two Touch controllers are the gamepad while no gamepad is connected to the PC, and,
@@ -298,8 +303,11 @@ says what they say as they say it, and is then the one that plays.
 The emulator knows two builds of the game's executable from inside: the one on the disc
 (1.00) and the last update (1.04). It tells them apart by what the executable holds when it
 is loaded, not by what a package's name or `param.sfo` says, and the console window names
-the one it found (`CUSA12392 in a build known from inside: ...`). Any other build is left to
-itself: it plays at the console's sizes, and in slow motion where frames take long.
+the one it found (`CUSA12392 in a build known from inside: ...`). The American release
+(CUSA12431) is looked into the same way (#35): where its executable is one of those two
+inside, it has the same fixes. Any other build is left to itself: it plays at the console's
+sizes, and in slow motion where frames take long. Saves are kept by release: the American
+one's are in `pc-vr\user\home\1000\savedata\CUSA12431`.
 
 - **A copy of the game that has the update in it** (one package, or one folder): put it in
   `games` as it is. Keep the whole folder together: an updated `eboot.bin` alone in an
@@ -548,6 +556,34 @@ Things that had to be right, for whoever works on this again:
   Desktop has its own only while it streams to the headset, and names the PC's until then.
   Every port plays on a device of its own, never on "the default device" as such (see
   "Fixed and added in 0.19").
+
+## Fixed and added in 0.22 (2026-10-19)
+
+- **Virtual Desktop no longer holds up the game** (issues #30, #33): its runtime was handed the
+  graphics queue the game draws with, and a picture it held on to (100 ms at times, 500 ms now
+  and then, in every log posted) kept the game's own work waiting all that time: a hitch, and
+  on one PC a game that fell to 30 frames a second. Where the graphics card has a second queue
+  (NVIDIA's do), the runtime gets that one. The `Headset:` line counts the times ending a
+  picture took 50 ms or more, and the session's first line says which queue the runtime got.
+- **The crash at the end of 2-2 above 60 frames a second** (issue #23): the soccer robots count
+  how long they stay in each state in the console's frames, which the game turned into seconds
+  with the length of the current frame. At 90 frames a second their states were shorter than
+  their animations, the game's own check failed, and it crashed. They count 1/60 s frames now,
+  whatever the frame rate.
+- **A picture too large for the graphics card's memory** (issue #37): with 8 GB, a picture of
+  2160x2304 an eye made every frame take seven times as long, for minutes. The picture no
+  longer grows while the card's memory is more than 80% in use ("No larger picture than ...");
+  the "title's clock" line every 10 seconds says how much is used.
+- **What stopped the emulator reaches the log** (issue #38): Virtual Desktop's runtime throws
+  and catches errors of its own, which the emulator took for a crash ("Unhandled Exception
+  code 0xe06d7363"). Since that first one, the reason for a real stop that followed was lost.
+  Such an error is now a warning with its text, the reason for a stop is always written, and
+  the launcher's window shows it (with a word on what to do where the graphics card was lost).
+- **The American release, CUSA12431** (issue #35), is taken for the same game: the launcher
+  finds it, and the emulator gives it the same fixes where its build is one of those it knows
+  from inside (see "The game's versions").
+- Steam's own PS button chords (issue #34): see "The gamepad in the game, where nothing tracks
+  it".
 
 ## Fixed in 0.21.1 (2026-10-13)
 

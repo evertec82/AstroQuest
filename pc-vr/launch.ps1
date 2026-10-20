@@ -189,7 +189,9 @@ function Show-Form($form) {
 # game= in the settings names one that is elsewhere (its eboot.bin, its folder or its package),
 # and when none is found a window asks where it is.
 $gamesFolder = Join-Path $root "games"
-$madeFor = "CUSA12392"
+# The game's releases AstroQuest is made for: the European one, and the American one (issue
+# #35). The emulator tells their builds apart from inside.
+$madeFor = @("CUSA12392", "CUSA12431")
 # The longest path of a file inside that game: the emulator cannot open a file whose whole path
 # is longer than 259 characters.
 $longestInside = 126
@@ -265,7 +267,7 @@ function Find-Game([string]$top) {
         if ($folder -match '-(UPDATE|patch|mods)$') { continue }
         $eboot = [System.IO.Path]::Combine($folder, "eboot.bin")
         if (-not [System.IO.File]::Exists($eboot)) { continue }
-        if ((Get-GameInfo $eboot)["TITLE_ID"] -eq $madeFor) { return $eboot }
+        if ($madeFor -contains (Get-GameInfo $eboot)["TITLE_ID"]) { return $eboot }
         if ($null -eq $first) { $first = $eboot }
     }
     return $first
@@ -894,15 +896,15 @@ Say ("The game: " + $game)
 $info = Get-GameInfo $game
 if ($info.Count -eq 0) {
     Say "sce_sys\param.sfo is missing next to it: this is not a complete copy of the game, and the emulator may not know it." "Yellow"
-} elseif ($info["TITLE_ID"] -ne $madeFor) {
-    Say ("This is " + $info["TITLE"] + ", " + $info["TITLE_ID"] + ". AstroQuest is made for ASTRO BOT Rescue Mission in its European release, " + $madeFor + ": its fixes for the game's speed and picture do not apply to another, and it may not run.") "Yellow"
+} elseif ($madeFor -notcontains $info["TITLE_ID"]) {
+    Say ("This is " + $info["TITLE"] + ", " + $info["TITLE_ID"] + ". AstroQuest is made for ASTRO BOT Rescue Mission in its European or American release, " + ($madeFor -join " or ") + ": its fixes for the game's speed and picture do not apply to another, and it may not run.") "Yellow"
 } elseif (@("01.00", "01.04") -notcontains $info["APP_VER"]) {
     # (What decides is the executable itself, which the emulator looks at as it loads it and
     # names below; what the game says its version is can be wrong.)
     Say ("This copy of the game says it is version " + $info["APP_VER"] + ". AstroQuest knows versions 01.00 and 01.04 from inside: another plays in slow motion where frames take long, and at the console's resolution.") "Yellow"
 }
 $gameFolder = [System.IO.Path]::GetDirectoryName($game)
-if ($info["TITLE_ID"] -eq $madeFor -and -not [System.IO.File]::Exists([System.IO.Path]::Combine($gameFolder, "sce_module", "libc.prx"))) {
+if ($madeFor -contains $info["TITLE_ID"] -and -not [System.IO.File]::Exists([System.IO.Path]::Combine($gameFolder, "sce_module", "libc.prx"))) {
     [void](Show-Box ("This is not a complete copy of the game:`n" + $gameFolder + "`n`nParts that every copy has are missing (sce_module\libc.prx for one). A folder with only an update of the game in it looks like this: an update holds the files it changed and no more. Put the update's files over a copy of the whole game, or use the game without its update.") "OK" "Warning")
     exit 1
 }
@@ -1051,6 +1053,8 @@ $null = $process.Handle
     Set-Content (Join-Path $logDir 'run-result.txt') -Encoding UTF8
 $position = 0
 $shown = @{}
+# An assert says what failed on the line after its own ("Assertion Failed!" and then why).
+$criticalGoesOn = $false
 function Show-Log {
     if (-not (Test-Path $log)) { return }
     try {
@@ -1063,6 +1067,13 @@ function Show-Log {
         while ($true) {
             $line = $reader.ReadLine()
             if ($null -eq $line) { break }
+            if ($script:criticalGoesOn) {
+                $script:criticalGoesOn = $false
+                if ($line.Length -gt 0 -and -not $line.StartsWith("[")) {
+                    if (-not $shown.ContainsKey($line)) { $shown[$line] = 1; Say ("    " + $line) "Red" }
+                    continue
+                }
+            }
             if ($line -match '^\[Core\.Vr\] <(Info|Warning)> \([^)]*\) \S+ (?:\w+: )?(.*)$') {
                 $warning = $Matches[1] -eq "Warning"
                 $text = $Matches[2]
@@ -1080,15 +1091,16 @@ function Show-Log {
                 Say ("  " + $Matches[1])
             } elseif ($line -match '^\[Input\] <Warning> \([^)]*\) \S+ (?:\w+: )?(Controller .*)$') {
                 Say ("  " + $Matches[1]) "Yellow"
-            } elseif ($line -match '^\[Core\] <Info> \([^)]*\) \S+ (?:\w+: )?(CUSA12392 in a build .*|The title draws at up to .*|The scene is drawn at .*|Frames are given .*|The console.s language: .*)$') {
+            } elseif ($line -match '^\[Core\] <Info> \([^)]*\) \S+ (?:\w+: )?(CUSA\d+ in a build .*|The title draws at up to .*|The scene is drawn at .*|No larger picture .*|Frames are given .*|The console.s language: .*)$') {
                 Say ("  " + $Matches[1])
-            } elseif ($line -match '^\[Core\] <Warning> \([^)]*\) \S+ (?:\w+: )?(This build of CUSA12392 .*)$') {
+            } elseif ($line -match '^\[Core\] <Warning> \([^)]*\) \S+ (?:\w+: )?(This build of CUSA\d+ .*)$') {
                 Say ("  " + $Matches[1]) "Yellow"
             } elseif ($line -match '^\[Lib\.AudioIn\] <(Info|Warning)> \([^)]*\) \S+ (?:\w+: )?(Microphone: .*)$') {
                 if ($Matches[1] -eq "Warning") { Say ("  " + $Matches[2]) "Yellow" } else { Say ("  " + $Matches[2]) }
             } elseif ($line -match '<Critical>.*?: (.*)$') {
                 $text = $Matches[1]
                 if (-not $shown.ContainsKey($text)) { $shown[$text] = 1; Say ("  ! " + $text) "Red" }
+                $script:criticalGoesOn = $text.EndsWith("!")
             }
         }
         $script:position = $stream.Position
@@ -1114,6 +1126,9 @@ if ($null -eq $exitCode -or $exitCode -ne 0) {
         Say ("Could not create crash ZIP: " + $_.Exception.Message) "Yellow"
     }
     Say ("The emulator ended with code " + $process.ExitCode + ". Its log is $log") "Yellow"
+    if (@($shown.Keys | Where-Object { $_ -match 'Device lost|DeviceLost' }).Count -gt 0) {
+        Say "The graphics card stopped answering, and Windows started its driver again. That happens when the card has too much to do for too long, or runs out of its own memory: choose a smaller resolution in the launcher, close other programs that use the graphics card, and keep its driver up to date."
+    }
     if ($process.ExitCode -eq -1073741515) {
         Say "Windows could not find a file the emulator needs: most likely the Microsoft Visual C++ runtime (64-bit) is not installed. Its installer: https://aka.ms/vs/17/release/vc_redist.x64.exe"
     }

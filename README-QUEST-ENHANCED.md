@@ -13,7 +13,7 @@ This is an experimental standalone Quest 3 build from the PC fork's shared emula
 ## Install
 
 1. Enable developer mode and USB debugging on your Quest 3. Connect it by USB and authorize the computer in the headset.
-2. Sideload `AstroQuest-Standalone-0.8.6-preview.apk` with SideQuest or `adb install -r AstroQuest-Standalone-0.8.6-preview.apk`.
+2. Sideload `AstroQuest-Quest-0.8.7-preview.apk` with SideQuest or `adb install -r AstroQuest-Quest-0.8.7-preview.apk`.
 3. The app is named **AstroQuest Enhanced (preview)** under Unknown Sources. Its package is `com.astrobotquest.vrhost.evertec82`, separate from upstream AstroQuest. Do not uninstall upstream to install this preview.
 4. Supply your own extracted Astro Bot game. The upstream layout is `/data/local/tmp/astro/games/CUSA12392/eboot.bin` with the game's remaining extracted files alongside it. For example, `adb push CUSA12392 /data/local/tmp/astro/games/`. An existing game in that shared location can be reused. No game files are included.
 5. Alternatively use `/sdcard/Android/data/com.astrobotquest.vrhost.evertec82/files/games/CUSA12392/` after the first launch creates the app folder.
@@ -38,5 +38,8 @@ Resolution choices: Auto (up to 2160 x 2304), Game controlled, 816 x 870, 960 x 
 
 Includes upstream 0.21 and 0.21.1: optimized shader constants, eye copies and cache lookups; foveated rendering and FSR 1 options; the inter-eye depth synchronization fix; and texture-cache double-unregister protection. Startup also offers detail, frame pacing and refresh-rate choices. Full framerate remains the default in this fork; Steady 30 FPS is selectable. Higher resolution settings can reduce framerate. This merged build has passed build and automated checks but has not yet been tested in the headset.
 
-## v0.8.6
+## v0.8.7
 The soccer-enemy animation budget correction now covers game 1.04 as well as 1.00. Both executable layouts pass guarded patch checks; gameplay confirmation remains pending.
+
+## v0.8.7
+Includes upstream v0.22 core fixes and the selectable 45 FPS cap alongside full framerate and steady 30 FPS. A 45 FPS cap aligns to display refresh: 45 at 90 Hz, 36 at 72 Hz, or 40 at 120 Hz. Existing FOV, resolution and platform settings are retained.

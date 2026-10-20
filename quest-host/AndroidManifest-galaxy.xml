@@ -1,5 +1,5 @@
 <?xml version='1.0' encoding='utf-8'?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.astrobotquest.vrhost" android:versionCode="80601" android:versionName="0.8.6-galaxy-preview" android:installLocation="auto">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.astrobotquest.vrhost" android:versionCode="80701" android:versionName="0.8.7-galaxy-preview" android:installLocation="auto">
 
     <uses-sdk android:minSdkVersion="32" android:targetSdkVersion="32" />
 

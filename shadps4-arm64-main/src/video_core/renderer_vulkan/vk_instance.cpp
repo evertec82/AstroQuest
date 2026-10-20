@@ -502,21 +502,18 @@ bool Instance::CreateDevice() {
         return false;
     }
 
-    // OpenXR may wait for its compositor while externally synchronizing the bound queue.
-    // Give it another queue in the same family so that wait cannot block game submissions.
-    headset_queue_index = 0;
 #ifdef ENABLE_OPENXR_HOST
-    const char* shared_queue = std::getenv("SHADPS4_XR_SHARED_QUEUE");
-    if (Core::Vr::OpenXrHost::Instance().IsAvailable() &&
-        family_properties[queue_family_index].queueCount > 1 &&
-        !(shared_queue != nullptr && shared_queue[0] == '1')) {
-        headset_queue_index = 1;
-    }
-#endif
+    // A second queue of the same family, where there is one, for a headset's runtime (see
+    // GetXrQueue).
     static constexpr std::array queue_priorities = {1.0f, 1.0f};
+#else
+    static constexpr std::array queue_priorities = {1.0f};
+#endif
+    const u32 queue_count = std::min<u32>(family_properties[queue_family_index].queueCount,
+                                          static_cast<u32>(queue_priorities.size()));
     const vk::DeviceQueueCreateInfo queue_info = {
         .queueFamilyIndex = queue_family_index,
-        .queueCount = headset_queue_index + 1,
+        .queueCount = queue_count,
         .pQueuePriorities = queue_priorities.data(),
     };
 
@@ -796,7 +793,9 @@ bool Instance::CreateDevice() {
 
     graphics_queue = device->getQueue(queue_family_index, 0);
     present_queue = device->getQueue(queue_family_index, 0);
-    headset_queue = device->getQueue(queue_family_index, headset_queue_index);
+    const char* shared_queue = std::getenv("SHADPS4_XR_SHARED_QUEUE");
+    xr_queue_index = queue_count > 1 && !(shared_queue && shared_queue[0] == '1') ? 1 : 0;
+    xr_queue = device->getQueue(queue_family_index, xr_queue_index);
 
     if (calibrated_timestamps) {
         const auto [time_domains_result, time_domains] =
@@ -1006,7 +1005,7 @@ void Instance::CollectToolingInfo() const {
     }
 }
 
-u64 Instance::GetDeviceMemoryUsage() const {
+u64 Instance::GetDeviceMemoryUsage(u64* budget) const {
     vk::PhysicalDeviceMemoryBudgetPropertiesEXT memory_budget_props{};
     vk::PhysicalDeviceMemoryProperties2 props = {
         .pNext = &memory_budget_props,
@@ -1014,8 +1013,13 @@ u64 Instance::GetDeviceMemoryUsage() const {
     physical_device.getMemoryProperties2(&props);
 
     u64 total_usage = 0;
+    u64 total_budget = 0;
     for (const size_t heap : valid_heaps) {
         total_usage += memory_budget_props.heapUsage[heap];
+        total_budget += memory_budget_props.heapBudget[heap];
+    }
+    if (budget != nullptr) {
+        *budget = total_budget;
     }
     return total_usage;
 }
