@@ -1,0 +1,44 @@
+<?xml version='1.0' encoding='utf-8'?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.astrobotquest.vrhost" android:versionCode="80601" android:versionName="0.8.6-galaxy-preview" android:installLocation="auto">
+
+    <uses-sdk android:minSdkVersion="32" android:targetSdkVersion="32" />
+
+    <uses-feature android:name="android.software.xr.api.openxr" android:required="true" />
+    <uses-feature android:name="android.hardware.xr.input.controller" android:required="false" />
+    <uses-feature android:glEsVersion="0x00030001" android:required="true" />
+
+    
+    <uses-permission android:name="org.khronos.openxr.permission.OPENXR" />
+    <uses-permission android:name="org.khronos.openxr.permission.OPENXR_SYSTEM" />
+    
+    <uses-permission android:name="android.permission.VIBRATE" />
+    
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
+    
+    <instrumentation android:name="com.astrobotquest.vrhost.SandboxShell" android:targetPackage="com.astrobotquest.vrhost" />
+
+    <queries>
+        <provider android:authorities="org.khronos.openxr.runtime_broker;org.khronos.openxr.system_runtime_broker" />
+        <intent>
+            <action android:name="org.khronos.openxr.OpenXRRuntimeService" />
+        </intent>
+        <intent>
+            <action android:name="org.khronos.openxr.OpenXRApiLayerService" />
+        </intent>
+    </queries>
+
+    
+    <application android:label="AstroQuest Galaxy XR (preview)" android:allowBackup="false" android:extractNativeLibs="true" android:hasCode="true" android:appCategory="game">
+
+        <activity android:name="com.astrobotquest.vrhost.MainActivity" android:exported="true" android:screenOrientation="landscape" android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen" android:configChanges="density|keyboard|keyboardHidden|navigation|orientation|screenLayout|screenSize|uiMode" android:launchMode="singleTask" android:resizeableActivity="false">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+                <category android:name="org.khronos.openxr.intent.category.IMMERSIVE_HMD" />
+            </intent-filter>
+        </activity>
+    <uses-native-library android:name="libopenxr.google.so" android:required="false" />
+    <property android:name="android.window.PROPERTY_XR_ACTIVITY_START_MODE" android:value="XR_ACTIVITY_START_MODE_FULL_SPACE_UNMANAGED" />
+    <property android:name="android.window.PROPERTY_XR_BOUNDARY_TYPE_RECOMMENDED" android:value="XR_BOUNDARY_TYPE_NO_RECOMMENDATION" /></application>
+</manifest>

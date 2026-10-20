@@ -367,6 +367,8 @@ public class MainActivity extends Activity
                     == REFRESH_FASTER ? REFRESH_FASTER : REFRESH_DEFAULT;
         }
         readSettings();
+        // Android XR preview uses controllers/gamepad; hand tracking needs a permission flow.
+        if (getPackageName().endsWith(".galaxyxr")) trackHands = false;
         choosingFov = !dryRun;
         nativeStartXr(refreshRate, 1440, 1536, trackHands, sharpen, cubic, showStats, predictMs,
                 dynamicResolution, cpuBoost, ownControllers, padHand, padTilt, rumble,
@@ -650,7 +652,8 @@ public class MainActivity extends Activity
                         antialias = !value.equals("0");
                         break;
                     case "pace":
-                        pace = Math.max(0, Math.min(6, Integer.parseInt(value)));
+                        pace = Integer.parseInt(value);
+                        pace = pace == 45 ? 45 : Math.max(0, Math.min(6, pace));
                         break;
                     case "stick_touchpad":
                         stickTouchpad = !value.equals("0");
@@ -841,12 +844,17 @@ public class MainActivity extends Activity
             if (!realTime) {
                 env.add("SHADPS4_TITLE_TIMESTEP=0");
             }
-            if (pace >= 1) {
+            if (pace == 45) {
+                // Match whole display intervals without exceeding the selected cap.
+                env.add("SHADPS4_VR_PACE=0");
+                env.add("SHADPS4_VR_FPS_CAP=45");
+            } else if (pace >= 1) {
                 env.add("SHADPS4_VR_PACE=" + pace);
             } else {
                 // 30 frames a second throughout (3 refreshes at 90 Hz, 4 at 120): only the size
                 // of the picture follows what the GPU manages, so frames never come unevenly
                 // because a faster rate was tried.
+                env.add("SHADPS4_VR_PACE=0");
                 env.add("SHADPS4_VR_STEADY_FPS=30");
             }
             if (headsetFov != null) {
@@ -1142,7 +1150,7 @@ public class MainActivity extends Activity
         drawMenuLine(canvas, paint, 108, "Resolution per eye", RESOLUTION_LABELS[resolutionIndex()], "");
         drawSettingSlider(canvas, paint, 94, (fieldOfView - FOV_MIN) / (float)(FOV_MAX - FOV_MIN));
         drawSettingSlider(canvas, paint, 150, resolutionIndex() / (float)(RESOLUTION_VALUES.length - 1));
-        drawMenuLine(canvas, paint, 164, "Frame pacing", pace == 0 ? "Steady 30 FPS" : pace == 1 ? "Full framerate" : "Every " + pace + " refreshes", "Full: every refresh when possible   /   Steady: upstream 30 FPS mode");
+        drawMenuLine(canvas, paint, 164, "Frame pacing", pace == 0 ? "Steady 30 FPS" : pace == 1 ? "Full framerate" : pace == 45 ? "45 FPS cap" : "Every " + pace + " refreshes", "Full / 45 FPS cap / Steady 30   (45 cap: 36 at 72 Hz, 40 at 120 Hz)");
         drawMenuLine(canvas, paint, 220, "Detail further away", detail == DETAIL_CONSOLE ? "Console" : "Lighter", "Lighter reduces distant model and shadow detail");
         drawMenuLine(canvas, paint, 276, "Foveated rendering", FOVEATION_NAMES[foveation], "Higher settings reduce shading work toward the edges");
         drawMenuLine(canvas, paint, 332, "Picture enlarged with", upscaleFsr ? "FSR 1" : "Game's own", "FSR 1 sharpens the center of the view");
@@ -1205,7 +1213,9 @@ public class MainActivity extends Activity
         if (menuRow == 1) {
             resolution = RESOLUTION_VALUES[Math.max(0, Math.min(RESOLUTION_VALUES.length - 1, resolutionIndex() + direction))];
         } else if (menuRow == 2) {
-            pace = direction < 0 ? 1 : 0;
+            int pacingIndex = pace == 1 ? 0 : pace == 45 ? 1 : 2;
+            pacingIndex = Math.max(0, Math.min(2, pacingIndex + direction));
+            pace = new int[] {1, 45, 0}[pacingIndex];
         } else if (menuRow == 3) {
             detail = direction < 0 ? DETAIL_CONSOLE : DETAIL_LIGHTER;
         } else if (menuRow == 4) {

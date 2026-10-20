@@ -1,6 +1,6 @@
 # AstroQuest PICO standalone preview
 
-**Experimental PICO preview updated to the Quest v0.8.6 core and upstream 0.21.1. Black-square gameplay validation on the headset is pending.**
+**Experimental PICO preview updated to the Quest v0.8.6 core and upstream 0.21.1.**
 
 Experimental standalone Android/OpenXR build of Astro Bot, based on the enhanced Quest ARM64 core. The app is named **AstroQuest PICO (preview)**, package `com.astrobotquest.vrhost.evertec82.pico`. It keeps separate saves and settings from the Quest app.
 
@@ -26,4 +26,4 @@ Local validation status is recorded separately from this distributable document.
 
 ## Startup display settings (0.8.6)
 
-Use Up/Down to choose FOV or resolution, Left/Right to adjust, and A/X or a trigger to play. Both choices are saved. Resolution includes Auto, Game controlled, and fixed per-eye sizes of 816 x 870, 960 x 1080, 1200 x 1280, 1440 x 1536, 1680 x 1792, 1920 x 2048, and 2160 x 2304. Auto reaches 2160 x 2304 while retaining its original lower-resolution fallbacks. The maximum has 2.25 times the former pixel count, which may reduce performance. Includes the upstream black-square fix, shader and cache optimizations, distant detail/foveation/FSR 1/refresh controls, full-framerate or steady-30 pacing, and the game 1.04 soccer timing correction. Visual confirmation is still required.
+Use Up/Down to choose FOV or resolution, Left/Right to adjust, and A/X or a trigger to play. Both choices are saved. Resolution includes Auto, Game controlled, and fixed per-eye sizes of 816 x 870, 960 x 1080, 1200 x 1280, 1440 x 1536, 1680 x 1792, 1920 x 2048, and 2160 x 2304. Auto reaches 2160 x 2304 while retaining its original lower-resolution fallbacks. The maximum has 2.25 times the former pixel count, which may reduce performance. Includes the upstream black-square fix, shader and cache optimizations, distant detail/foveation/FSR 1/refresh controls, full-framerate or steady-30 pacing, and the game 1.04 soccer timing correction.
