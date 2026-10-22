@@ -8,6 +8,7 @@
 #include "video_core/renderer_vulkan/vk_common.h"
 
 #include <boost/container/small_vector.hpp>
+#include <future>
 
 namespace Shader {
 struct Info;
@@ -32,9 +33,7 @@ public:
              bool is_compute = false);
     virtual ~Pipeline();
 
-    vk::Pipeline Handle() const noexcept {
-        return *pipeline;
-    }
+    vk::Pipeline Handle() const;
 
     vk::PipelineLayout GetLayout() const noexcept {
         return *pipeline_layout;
@@ -70,7 +69,8 @@ protected:
     Scheduler& scheduler;
     DescriptorHeap& desc_heap;
     const Shader::Profile& profile;
-    vk::UniquePipeline pipeline;
+    mutable vk::UniquePipeline pipeline;
+    mutable std::future<vk::UniquePipeline> compilation;
     vk::UniquePipelineLayout pipeline_layout;
     vk::UniqueDescriptorSetLayout desc_layout;
     std::array<const Shader::Info*, Shader::MaxStageTypes> stages{};

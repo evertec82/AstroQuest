@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <boost/container/static_vector.hpp>
+#include <chrono>
 
 #include "shader_recompiler/resource.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
@@ -17,7 +18,25 @@ Pipeline::Pipeline(const Instance& instance_, Scheduler& scheduler_, DescriptorH
     : instance{instance_}, scheduler{scheduler_}, desc_heap{desc_heap_}, profile{profile_},
       is_compute{is_compute_} {}
 
-Pipeline::~Pipeline() = default;
+Pipeline::~Pipeline() {
+    if (compilation.valid()) {
+        compilation.wait();
+    }
+}
+
+vk::Pipeline Pipeline::Handle() const {
+    if (compilation.valid()) {
+        const auto start = std::chrono::steady_clock::now();
+        // No draw is omitted or given a placeholder when its pipeline is late.
+        // get() also propagates compilation failures rather than drawing with null.
+        pipeline = compilation.get();
+        const double wait_ms = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - start).count();
+        LOG_INFO(Render_Vulkan, "Async pipeline bind wait {:.3f} ms {}", wait_ms,
+                 GetDebugString());
+    }
+    return *pipeline;
+}
 
 void Pipeline::BindResources(DescriptorWrites& set_writes, const BufferBarriers& buffer_barriers,
                              const Shader::PushData& push_data) const {

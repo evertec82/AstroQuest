@@ -1,2 +1,6 @@
-AstroQuest PC VR v0.8.7
-Integrates upstream 0.22: runtime queue safety, six-site soccer timing, exception diagnostics, VRAM governor and US game support.
+AstroQuest PC VR v0.8.8-experimental.1
+Experimental asynchronous shader compilation
+Based on v0.8.7. Vulkan graphics pipeline compilation overlaps draw resource preparation.
+Draws wait for unfinished pipelines; GCN translation and compute remain synchronous.
+Worker regression tests, Windows/ARM64 builds and desktop smoke test passed.
+Headset gameplay validation pending.

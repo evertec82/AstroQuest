@@ -327,15 +327,26 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
                     "Forcing buffer #0 F32 loads as U32 bitcast on {} (IEEE-bit preserving)",
                     instance_.GetModelName());
     }
-    WarmUp();
 
     auto [cache_result, cache] = instance.GetDevice().createPipelineCacheUnique({});
     ASSERT_MSG(cache_result == vk::Result::eSuccess, "Failed to create pipeline cache: {}",
                vk::to_string(cache_result));
     pipeline_cache = std::move(cache);
+    // Default cache flags use Vulkan's internal creation synchronization.
+    const char* async = std::getenv("SHADPS4_ASYNC_PIPELINES");
+    if (!async || std::strcmp(async, "0") != 0) {
+        compiler = std::make_unique<Common::CompileWorker>();
+    }
+    LOG_INFO(Render_Vulkan, "Async graphics pipeline compilation: {} (wait before draw)",
+             compiler ? "enabled" : "disabled");
+    WarmUp();
 }
 
-PipelineCache::~PipelineCache() = default;
+PipelineCache::~PipelineCache() {
+    if (compiler) {
+        compiler->WaitIdle();
+    }
+}
 
 const GraphicsPipeline* PipelineCache::GetGraphicsPipeline() {
     if (!RefreshGraphicsKey()) {
@@ -376,7 +387,8 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline() {
             }
             it.value() = std::make_unique<GraphicsPipeline>(
                 instance, scheduler, desc_heap, profile, graphics_key, *pipeline_cache, infos,
-                runtime_infos, fetch_shader, modules, sdata, false, diagnostic_coverage);
+                runtime_infos, fetch_shader, modules, sdata, false, diagnostic_coverage,
+                compiler.get());
         } catch (const std::exception& ex) {
             LOG_ERROR(Render_Vulkan, "Graphics pipeline {:#x} compile failed: {}", pipeline_hash,
                       ex.what());
@@ -387,7 +399,7 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline() {
 
         // How long the driver took over it: what a frame that waits for a new pipeline is held
         // up by (the GPU driver's own cache keeps what it compiled for the next session).
-        LOG_INFO(Render_Vulkan, "Graphics pipeline {:#x} made in {:.1f} ms", pipeline_hash,
+        LOG_INFO(Render_Vulkan, "Graphics pipeline {:#x} prepared in {:.1f} ms", pipeline_hash,
                  std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() -
                                                            compile_start)
                      .count());
@@ -943,6 +955,10 @@ PipelineCache::Result PipelineCache::GetProgram(Stage stage, LogicalStage l_stag
 
 std::optional<vk::ShaderModule> PipelineCache::ReplaceShader(vk::ShaderModule module,
                                                              std::span<const u32> spv_code) {
+    // A live edit must not destroy a shader module a worker is still compiling.
+    if (compiler) {
+        compiler->WaitIdle();
+    }
     std::optional<vk::ShaderModule> new_module{};
     for (const auto& [_, program] : program_cache) {
         for (auto& m : program->modules) {
